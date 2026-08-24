@@ -9,6 +9,9 @@ Source100:  harbour-fgview.yaml
 
 Requires:   sailfishsilica-qt5 >= 0.10.9
 Requires:   qt5-qtdeclarative-import-sensors
+Requires:   fgfs-sailfish >= 2020.3.19
+Requires:   curl
+Requires:   aria2
 
 BuildRequires:  pkgconfig(sailfishapp) >= 1.0.2
 BuildRequires:  pkgconfig(Qt5Core)
