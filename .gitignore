@@ -1,8 +1,11 @@
 RPMS/
 installroot/
+*.rpm
 *.o
 moc_*.cpp
-qrc_*.cpp
+moc_*.h
+*.moc
 Makefile
 .qmake.stash
-.rpmlintrc
+documentation.list
+harbour-fgview
