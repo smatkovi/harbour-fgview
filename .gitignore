@@ -1,0 +1,8 @@
+RPMS/
+installroot/
+*.o
+moc_*.cpp
+qrc_*.cpp
+Makefile
+.qmake.stash
+.rpmlintrc

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+X-Nemo-Application-Type=silica-qt5
+Icon=harbour-fgview
+Exec=harbour-fgview
+Name=FlightGear
+
+[X-Sailjail]
+Sandboxing=Disabled
+OrganizationName=org.smatkovi
+ApplicationName=fgview
