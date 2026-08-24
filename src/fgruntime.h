@@ -23,6 +23,7 @@
 #include <QRegularExpression>
 #include <QProcessEnvironment>
 #include <QTimer>
+#include <QDirIterator>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
@@ -50,6 +51,10 @@ public:
                 this, &FgRuntime::onDownloadOutput);
         connect(&_dl, &QProcess::readyReadStandardError,
                 this, &FgRuntime::onDownloadOutput);
+        _extractTick.setInterval(2000);
+        connect(&_extractTick, &QTimer::timeout,
+                this, &FgRuntime::updateExtractProgress);
+
         _heartbeat.setInterval(1000);
         connect(&_heartbeat, &QTimer::timeout, this, [this]{
             if (busy()) { emit stateChanged(); emit progressChanged(); }
@@ -89,6 +94,17 @@ public slots:
     void downloadData()
     {
         if (busy() || _resolving) return;
+
+        /* Archiv schon vollstaendig? Dann direkt entpacken. */
+        const QString archive = _root + "/fgdata.txz";
+        if (QFileInfo(archive).size() == ARCHIVE_BYTES
+            && !QFileInfo::exists(archive + ".aria2")) {
+            _progress = 100;
+            _speed.clear();
+            emit progressChanged();
+            extractArchive();
+            return;
+        }
 
         _status = tr("Looking up mirror…");
         _progress = 0;
@@ -232,9 +248,14 @@ private slots:
         if (m.hasMatch()) {
             _progress = m.captured(1).toInt();
         }
+        static const QRegularExpression reEta("ETA:([0-9dhms]+)");
+
         auto d = reDl.match(out);
+        auto e = reEta.match(out);
         if (d.hasMatch()) {
             _speed = d.captured(1) + "/s";
+            if (e.hasMatch())
+                _speed += "  ETA " + e.captured(1);
         }
         if (m.hasMatch() || d.hasMatch()) emit progressChanged();
     }
@@ -248,10 +269,16 @@ private slots:
             return;
         }
 
+        extractArchive();
+    }
+
+    void extractArchive()
+    {
         _status = tr("Extracting base data…");
-        _progress = 100;
+        _progress = 0;
         _speed.clear();
         emit progressChanged();
+        emit stateChanged();
 
         QDir().mkpath(fgRoot());
         /* Das Archiv enthaelt ein Verzeichnis "fgdata" - eine Ebene
@@ -260,6 +287,32 @@ private slots:
                    << "xf" << _root + "/fgdata.txz"
                    << "-C" << fgRoot()
                    << "--strip-components=1");
+        _tar.waitForStarted(3000);
+        _extractTick.start();
+        emit stateChanged();
+    }
+
+    /* Fortschritt beim Entpacken aus der wachsenden Verzeichnisgroesse.
+       Vollstaendig entpackt sind es rund 2,7 GB. */
+    void updateExtractProgress()
+    {
+        if (_tar.state() == QProcess::NotRunning) {
+            _extractTick.stop();
+            return;
+        }
+        quint64 bytes = 0;
+        QDirIterator it(fgRoot(), QDir::Files | QDir::NoDotAndDotDot,
+                        QDirIterator::Subdirectories);
+        int guard = 0;
+        while (it.hasNext() && ++guard < 40000) {
+            it.next();
+            bytes += quint64(it.fileInfo().size());
+        }
+        _progress = int(qMin<quint64>(99, bytes * 100 / EXTRACTED_BYTES));
+        _speed = QString("%1 / %2 GB")
+                 .arg(bytes / 1.0e9, 0, 'f', 1)
+                 .arg(EXTRACTED_BYTES / 1.0e9, 0, 'f', 1);
+        emit progressChanged();
     }
 
     void onExtractFinished(int code, QProcess::ExitStatus)
@@ -285,8 +338,12 @@ signals:
 
 private:
     QString _root;
+    static const qint64  ARCHIVE_BYTES   = 1789370768LL;
+    static const quint64 EXTRACTED_BYTES = 2705459200ULL;
+
     QProcess _dl, _tar, _sim, _resolve;
     QTimer _heartbeat;
+    QTimer _extractTick;
     QNetworkAccessManager _nam;
     bool _resolving = false;
     int _progress = 0;
