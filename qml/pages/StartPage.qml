@@ -118,6 +118,30 @@ Page {
                 }
 
                 ComboBox {
+                    id: backendBox
+                    label: qsTr("Graphics backend")
+                    currentIndex: 0
+                    menu: ContextMenu {
+                        MenuItem { text: qsTr("Zink (complete)") }
+                        MenuItem { text: qsTr("GLES2 (native)") }
+                        MenuItem { text: qsTr("GLES3 (native)") }
+                    }
+                    property var ids: ["zink", "gles2", "gles3"]
+                }
+
+                Label {
+                    x: Theme.horizontalPageMargin
+                    width: parent.width - 2 * Theme.horizontalPageMargin
+                    wrapMode: Text.Wrap
+                    font.pixelSize: Theme.fontSizeExtraSmall
+                    color: Theme.secondaryColor
+                    visible: backendBox.currentIndex > 0
+                    text: qsTr("The native backends run without Mesa, but "
+                             + "have no menus, HUD, glass cockpit displays "
+                             + "or approach lights.")
+                }
+
+                ComboBox {
                     id: airportBox
                     label: qsTr("Departure airport")
                     currentIndex: 0
@@ -150,9 +174,17 @@ Page {
                             rt.stopSim()
                         } else {
                             rt.startSim(aircraftBox.ids[aircraftBox.currentIndex],
-                                        airportBox.ids[airportBox.currentIndex])
+                                        airportBox.ids[airportBox.currentIndex],
+                                        backendBox.ids[backendBox.currentIndex])
                         }
                     }
+                }
+
+                Button {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: qsTr("Simulator log")
+                    onClicked: pageStack.push(Qt.resolvedUrl("LogPage.qml"),
+                                              { rt: rt })
                 }
 
                 Button {

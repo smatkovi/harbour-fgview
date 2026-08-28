@@ -22,8 +22,10 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QProcessEnvironment>
+#include <unistd.h>
 #include <QTimer>
 #include <QDirIterator>
+#include <QFile>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
@@ -38,8 +40,31 @@ class FgRuntime : public QObject
     Q_PROPERTY(int     progress    READ progress    NOTIFY progressChanged)
     Q_PROPERTY(QString status      READ status      NOTIFY progressChanged)
     Q_PROPERTY(QString speed       READ speed       NOTIFY progressChanged)
+    Q_PROPERTY(QString simLog      READ simLog      NOTIFY simLogChanged)
 
 public:
+    ~FgRuntime() override
+    {
+        /* Zuerst die Signale trennen, sonst laufen Slots waehrend des
+           Abbaus in bereits zerlegte Objekte. */
+        _heartbeat.stop();
+        _extractTick.stop();
+        disconnect(&_dl,  nullptr, this, nullptr);
+        disconnect(&_tar, nullptr, this, nullptr);
+        disconnect(&_sim, nullptr, this, nullptr);
+
+        /* aria2 und fgfs laufen nur solange die App offen ist */
+        QProcess* procs[] = { &_dl, &_tar, &_sim };
+        for (QProcess* p : procs) {
+            if (p->state() != QProcess::NotRunning) {
+                p->terminate();
+                if (!p->waitForFinished(3000)) p->kill();
+                p->waitForFinished(1000);
+            }
+        }
+        if (_logFile.isOpen()) _logFile.close();
+    }
+
     explicit FgRuntime(QObject* parent = nullptr) : QObject(parent)
     {
         _root = QStandardPaths::writableLocation(
@@ -51,6 +76,9 @@ public:
                 this, &FgRuntime::onDownloadOutput);
         connect(&_dl, &QProcess::readyReadStandardError,
                 this, &FgRuntime::onDownloadOutput);
+        connect(&_sim, &QProcess::readyReadStandardOutput,
+                this, &FgRuntime::onSimOutput);
+
         _extractTick.setInterval(2000);
         connect(&_extractTick, &QTimer::timeout,
                 this, &FgRuntime::updateExtractProgress);
@@ -87,6 +115,7 @@ public:
     int progress() const { return _progress; }
     QString status() const { return _status; }
     QString speed() const { return _speed; }
+    QString simLog() const { return _simLog; }
 
     QString fgRoot() const { return _root + "/fgdata"; }
 
@@ -189,32 +218,67 @@ public slots:
     }
 
     void startSim(const QString& aircraft = "c172p",
-                  const QString& airport  = "LOWW")
+                  const QString& airport  = "LOWW",
+                  const QString& backend  = "zink")
     {
         if (simRunning() || !dataReady()) return;
 
+        _backend = backend;
+
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert("LD_LIBRARY_PATH", "/opt/mesa-zink/lib64:/opt/fgfs/lib");
-        env.insert("__EGL_VENDOR_LIBRARY_DIRS",
-                   "/opt/mesa-zink/share/glvnd/egl_vendor.d");
-        env.insert("EGL_PLATFORM", "wayland");
-        env.insert("MESA_LOADER_DRIVER_OVERRIDE", "zink");
         env.insert("XDG_RUNTIME_DIR", "/run/display");
         env.insert("WAYLAND_DISPLAY", "wayland-0");
         env.insert("FGFS_SHM", "1");
         env.remove("GALLIUM_DRIVER");
 
+        QString binary;
+        if (backend == "gles2" || backend == "gles3") {
+            /* Nativ auf hybris-EGL: kein Mesa, kein Zink. Dafuer
+               ohne GUI, HUD, Canvas und Anflugbefeuerung. */
+            const QString root = (backend == "gles3")
+                               ? QStringLiteral("/opt/osg-gles3")
+                               : QStringLiteral("/opt/osg-gles");
+            env.insert("LD_LIBRARY_PATH", root + "/lib");
+            env.insert("OSG_LIBRARY_PATH", root + "/lib/osgPlugins-3.6.5");
+            /* Kein Zero-Copy: hybris-EGL kennt kein
+               EGL_EXT_image_dma_buf_import, der Simulator koennte den
+               dmabuf gar nicht als Renderziel benutzen und die App
+               saehe einen leeren Puffer. Also Readback. */
+            env.insert("FGFS_DMA_HEAP", "/dev/null");
+            binary = (backend == "gles3")
+                   ? QStringLiteral("/opt/fgfs-gles3/bin/fgfs")
+                   : QStringLiteral("/opt/fgfs-gles/bin/fgfs");
+        } else {
+            env.insert("LD_LIBRARY_PATH", "/opt/mesa-zink/lib64:/opt/fgfs/lib");
+            env.insert("__EGL_VENDOR_LIBRARY_DIRS",
+                       "/opt/mesa-zink/share/glvnd/egl_vendor.d");
+            env.insert("EGL_PLATFORM", "wayland");
+            env.insert("MESA_LOADER_DRIVER_OVERRIDE", "zink");
+            /* Descriptor-Verwaltung: bringt bei Modellen mit vielen
+               Zustandswechseln rund 30 Prozent. */
+            env.insert("ZINK_DESCRIPTORS", "lazy");
+            binary = QStringLiteral("/opt/fgfs/bin/fgfs");
+        }
+
         _sim.setProcessEnvironment(env);
-        _sim.setProcessChannelMode(QProcess::ForwardedChannels);
-        _sim.start("/opt/fgfs/bin/fgfs", QStringList()
+        _sim.setProcessChannelMode(QProcess::MergedChannels);
+        _simLog.clear();
+        emit simLogChanged();
+        _sim.start(binary, QStringList()
                    << "--fg-root=" + fgRoot()
                    << "--disable-terrasync"
                    << "--disable-ai-models"
                    << "--disable-real-weather-fetch"
                    << "--disable-sound"
                    << "--prop:/sim/rendering/shadows/enabled=false"
+                   /* PUI-Menueleiste aus: PLIBs glBitmap-Schriften
+                      stuerzen unter Zink in tc_texture_map ab, und
+                      auf dem Telefon ist die Leiste ohnehin
+                      unbedienbar. */
+                   << "--prop:/sim/menubar/visibility=false"
                    << "--prop:/sim/rendering/multi-sample-buffers=0"
                    << "--generic=socket,in,30,,5501,udp,fgtouch"
+                   << "--telnet=5401"
                    << "--aircraft=" + aircraft
                    << "--airport=" + airport
                    << "--timeofday=noon");
@@ -230,10 +294,56 @@ public slots:
             _sim.terminate();
             if (!_sim.waitForFinished(3000)) _sim.kill();
         }
+        /* Segment und Socket aufraeumen - sonst verbindet sich der
+           naechste Start mit einem toten Socket. */
+        ::unlink("/dev/shm/fgfs-frame");
+        ::unlink("/tmp/fgfs-frame.sock");
         emit stateChanged();
     }
 
 private slots:
+    void onSimOutput()
+    {
+        const QString chunk = QString::fromUtf8(_sim.readAllStandardOutput());
+        if (chunk.isEmpty()) return;
+
+        /* alles mitschreiben, damit man nach einem Absturz nachsehen kann */
+        if (!_logFile.isOpen()) {
+            _logFile.setFileName(_root + "/fgfs.log");
+            _logFile.open(QIODevice::WriteOnly | QIODevice::Truncate);
+        }
+        if (_logFile.isOpen()) {
+            _logFile.write(chunk.toUtf8());
+            _logFile.flush();
+        }
+
+        /* die letzten Zeilen fuer die Anzeige vorhalten */
+        _simLog += chunk;
+        const int maxChars = 4000;
+        if (_simLog.size() > maxChars)
+            _simLog = _simLog.right(maxChars);
+        emit simLogChanged();
+
+        /* aussagekraeftige Zeilen in die Statuszeile heben */
+        const QStringList lines = chunk.split('\n', QString::SkipEmptyParts);
+        for (const QString& raw : lines) {
+            const QString l = raw.trimmed();
+            if (l.contains("FATAL") || l.contains("unable to create")) {
+                _status = l;
+                emit progressChanged();
+            } else if (l.contains("Loading tile")
+                       || l.contains("Scenery loaded")
+                       || l.contains("initializing JSBsim")
+                       || l.contains("Trim complete")
+                       || l.contains("Splash screen")
+                       || l.contains("Welcome aboard")) {
+                _status = l.section(']', 1).trimmed();
+                if (_status.isEmpty()) _status = l;
+                emit progressChanged();
+            }
+        }
+    }
+
     void onDownloadOutput()
     {
         const QString out = QString::fromUtf8(_dl.readAllStandardOutput())
@@ -335,6 +445,7 @@ private slots:
 signals:
     void stateChanged();
     void progressChanged();
+    void simLogChanged();
 
 private:
     QString _root;
@@ -342,8 +453,11 @@ private:
     static const quint64 EXTRACTED_BYTES = 2705459200ULL;
 
     QProcess _dl, _tar, _sim, _resolve;
+    QString  _backend;
     QTimer _heartbeat;
     QTimer _extractTick;
+    QString _simLog;
+    QFile _logFile;
     QNetworkAccessManager _nam;
     bool _resolving = false;
     int _progress = 0;

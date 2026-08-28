@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.2.0
+Version:    0.6.1
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,32 +51,53 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Mon Aug 24 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.3.0-1
+- Engine start button. FlightGear's generic protocol can only set the
+  control axes, so fuel selectors, battery, magnetos and primer are set
+  over the telnet channel (port 5401), which fgfs now opens
+- Brake button also releases the wheel brakes, not just the parking
+  brake — they are separate properties and the aircraft would not roll
+  with the wheel brakes still applied
+- Throttle now writes to current-engine instead of engine[0]; the c172p
+  reads the former, so the lever had no effect on engine power
+- Cockpit controls translated to English
+
+* Mon Aug 24 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.2.1-1
+- Simulator output is captured and shown on a log page in the app
+- Notable lines (scenery loading, JSBSim init, trim) surface in the
+  status line, so the two-minute startup is no longer a blank wait
+- Full output written to ~/.local/share/harbour-fgview/fgfs.log
+- Child processes terminated on aboutToQuit instead of in the
+  destructor, where Qt had already torn down the QProcess objects
+  and left orphaned fgfs instances behind
+
 * Mon Aug 24 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.2.0-1
-- Vollstaendig geladenes Archiv wird erkannt und direkt entpackt
-- Fortschrittsanzeige beim Entpacken, gespeist aus der Verzeichnisgroesse
-- Restzeit (ETA) aus aria2s Ausgabe uebernommen
-- Fortschritt wird aus stderr gelesen, nicht nur aus stdout
-- Sekundentakt haelt die Anzeige waehrend des Downloads aktuell
-- aria2 und fgfs werden beim Schliessen der App sauber beendet
-- Sandboxing=Disabled in der .desktop, sonst startet die App nicht
-  ueber das Anwendungsgitter
-- Requires auf fgfs-sailfish, curl und aria2
-- Oberflaeche auf Englisch, Texte in qsTr() fuer Uebersetzungen
+- A fully downloaded archive is detected and extraction starts
+  immediately instead of downloading again
+- Progress bar during extraction, derived from the growing directory
+- Remaining time (ETA) taken from aria2 output
+- Progress read from stderr, not just stdout
+- One-second tick keeps the display alive while downloading
+- aria2 and fgfs shut down when the app closes
+- Sandboxing=Disabled in the .desktop file; without it the app does
+  not launch from the application grid
+- Requires on fgfs-sailfish, curl and aria2
+- Interface in English, strings wrapped in qsTr() for translations
 
 * Mon Aug 24 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.1.1-1
-- Mirror-Aufloesung ueber curl statt QNetworkAccessManager: Qt 5.6 auf
-  Sailfish OS ist gegen OpenSSL 1.0 gebaut und scheitert auf Systemen
-  mit 1.1/3.x still an HTTPS
-- SourceForge beantwortet aria2-Anfragen auf die /download-Weiterleitung
-  mit 403; gegen die aufgeloeste Mirror-Adresse geht Segmentierung
-- Selbstzuweisung der FgRuntime-Property behoben, die alle Bindings
-  der Startseite ins Leere laufen liess
+- Mirror resolution via curl instead of QNetworkAccessManager: Qt 5.6
+  on Sailfish OS is built against OpenSSL 1.0 and fails silently on
+  HTTPS with 1.1/3.x on the system
+- SourceForge answers aria2 requests to the /download redirect with
+  403; segmentation works against the resolved mirror address
+- Fixed a self-assignment of the FgRuntime property that left every
+  binding on the start page evaluating to null
 
 * Mon Aug 24 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.1.0-1
-- Erste Fassung
-- Zeigt die von FlightGear ueber Shared Memory gelieferten Frames an
-- Neigungssteuerung fuer Quer- und Hoehenruder mit Kalibrierung auf
-  die aktuelle Lage
-- Gashebel, selbstzentrierendes Seitenruder, Fahrwerk, Klappen, Bremse
-- Steuerbefehle per UDP an FlightGears generic-Protokoll
-- FGData wird beim ersten Start mit aria2 nachgeladen
+- First release
+- Displays frames delivered by FlightGear through shared memory
+- Tilt steering for ailerons and elevator, calibrated to the current
+  device position
+- Throttle lever, self-centering rudder, gear, flaps, brake
+- Controls sent over UDP to FlightGear's generic protocol
+- FGData downloaded on first start using aria2

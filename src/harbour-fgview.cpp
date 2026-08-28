@@ -12,7 +12,9 @@
 #include <QQuickItem>
 #include <QSGSimpleTextureNode>
 #include <QUdpSocket>
+#include <QTcpSocket>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QAccelerometer>
 #include <QGyroscope>
 #include <QtMath>
@@ -24,6 +26,9 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <cstring>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <poll.h>
 
 // ===================================================================
 //  Shared-Memory-Leser
@@ -38,11 +43,17 @@ struct FgFrameHeader {
     quint64 sequence;
     quint32 activeSlot;
     quint32 reserved;
+    /* Zero-Copy: Verweis auf den dmabuf, in den die GPU rendert.
+       dmabufPid == 0 bedeutet klassischer Readback. */
+    quint32 dmabufPid;
+    quint32 dmabufFd;
+    quint32 dmabufStride;
+    quint32 dmabufFourcc;
 };
 #pragma pack(pop)
 
 static const quint32 FGFR_MAGIC = 0x46474652u;
-static const int     FGFR_HDR   = 32;
+static const int     FGFR_HDR   = 48;
 
 class FrameItem : public QQuickItem
 {
@@ -64,6 +75,7 @@ public:
             emit fpsChanged();
         });
         _fpsTimer.start(1000);
+        _report.start();
     }
 
     ~FrameItem() override { closeShm(); }
@@ -75,16 +87,35 @@ protected:
     QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override
     {
         if (_image.isNull()) { delete old; return nullptr; }
+        QElapsedTimer tn; tn.start();
 
         QSGSimpleTextureNode* node = static_cast<QSGSimpleTextureNode*>(old);
         if (!node) {
             node = new QSGSimpleTextureNode();
             node->setFiltering(QSGTexture::Linear);
+            /* GL rendert von unten nach oben; die Spiegelung hier
+               kostet nichts, im memcpy waere sie teuer. */
+            node->setTextureCoordinatesTransform(
+                QSGSimpleTextureNode::MirrorVertically);
         }
 
-        if (_texture) { delete _texture; _texture = nullptr; }
-        _texture = window()->createTextureFromImage(_image);
-        node->setTexture(_texture);
+        /* Textur nur neu anlegen, wenn sich die Groesse geaendert hat.
+           Sonst denselben Speicher ueberschreiben. */
+        if (!_texture || _texture->textureSize() != _image.size()) {
+            delete _texture;
+            _texture = window()->createTextureFromImage(
+                _image, QQuickWindow::TextureIsOpaque);
+            node->setTexture(_texture);
+        } else {
+            QElapsedTimer tt; tt.start();
+            QSGTexture* fresh = window()->createTextureFromImage(
+                _image, QQuickWindow::TextureIsOpaque);
+            _tTex += tt.nsecsElapsed();
+            ++_nTex;
+            delete _texture;
+            _texture = fresh;
+            node->setTexture(_texture);
+        }
 
         // Seitenverhaeltnis wahren, zentriert einpassen
         const qreal iw = _image.width(), ih = _image.height();
@@ -94,6 +125,8 @@ protected:
         const qreal scale = qMin(sw / iw, sh / ih);
         const qreal dw = iw * scale, dh = ih * scale;
         node->setRect((sw - dw) / 2.0, (sh - dh) / 2.0, dw, dh);
+        _tNode += tn.nsecsElapsed();
+        ++_nNode;
         return node;
     }
 
@@ -101,6 +134,7 @@ private slots:
     void poll()
     {
         if (!_base && !openShm()) return;
+        QElapsedTimer t; t.start();
 
         const FgFrameHeader* hdr =
             reinterpret_cast<const FgFrameHeader*>(_base);
@@ -118,22 +152,168 @@ private slots:
         if (_image.width() != w || _image.height() != h)
             _image = QImage(w, h, QImage::Format_RGBA8888);
 
-        const uchar* src = _base + FGFR_HDR + size_t(slot) * bytes;
+        /* Zero-Copy: der Simulator rendert direkt in einen dmabuf,
+           den wir ueber /proc/<pid>/fd/<fd> oeffnen und mappen. */
+        const uchar* src = nullptr;
+        if (hdr->dmabufPid != 0) {
+            if (!_dmabuf && !openDmabuf(hdr->dmabufPid, hdr->dmabufFd, bytes))
+                return;                      /* nicht erreichbar */
+            src = _dmabuf;
+        } else {
+            src = _base + FGFR_HDR + size_t(slot) * bytes;
+        }
 
-        /* GL liefert von unten nach oben - zeilenweise gespiegelt kopieren */
-        const int stride = w * 4;
-        for (int y = 0; y < h; ++y)
-            memcpy(_image.scanLine(h - 1 - y), src + size_t(y) * stride, stride);
+        /* Auf den Fence warten, falls der Simulator einen liefert.
+           Das haelt uns auf, nicht den Simulator - dessen Pipeline
+           bleibt gefuellt. */
+        waitForFence();
+
+        /* Ein Durchgang statt 768 Einzelkopien. Dass GL von unten
+           nach oben liefert, gleicht der Szenengraph beim Zeichnen
+           aus - siehe setTextureCoordinatesTransform unten. */
+        memcpy(_image.bits(), src, bytes);
 
         const quint64 s2 = hdr->sequence;
         if (s2 != s1) return;                   // Frame war inkonsistent
 
         _lastSeq = s1;
         ++_framesSinceTick;
+
+        _tPoll += t.nsecsElapsed();
+        ++_nPoll;
+        if (_report.elapsed() > 2000) {
+            const double f = 1.0e6;   /* ns -> ms */
+            qWarning("FGVIEW timing: poll %.1f ms  tex %.1f ms  node %.1f ms  "
+                     "(%d Frames in 2 s)",
+                     _nPoll  ? _tPoll  / f / _nPoll  : 0.0,
+                     _nTex   ? _tTex   / f / _nTex   : 0.0,
+                     _nNode  ? _tNode  / f / _nNode  : 0.0,
+                     _nPoll);
+            _tPoll = _tTex = _tNode = 0;
+            _nPoll = _nTex = _nNode = 0;
+            _report.restart();
+        }
+
         update();
     }
 
 private:
+    /* Der Deskriptor kommt ueber einen Unix-Socket mit SCM_RIGHTS.
+       Ueber /proc/<pid>/fd/ ginge es nicht: fuer anonyme Inodes wie
+       dmabuf lehnt der Kernel das Wiederoeffnen mit ENXIO ab. */
+    /* kind: 'F' = dmabuf, 'S' = Fence. */
+    static int receiveFd(const char* path, char* kind = nullptr)
+    {
+        int s = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (s < 0) return -1;
+
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof addr);
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+        if (::connect(s, (struct sockaddr*)&addr, sizeof addr) < 0) {
+            ::close(s);
+            return -1;
+        }
+
+        char dummy = 0;
+        struct iovec iov;
+        iov.iov_base = &dummy;
+        iov.iov_len = 1;
+
+        char cbuf[CMSG_SPACE(sizeof(int))];
+        memset(cbuf, 0, sizeof cbuf);
+
+        struct msghdr msg;
+        memset(&msg, 0, sizeof msg);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cbuf;
+        msg.msg_controllen = sizeof cbuf;
+
+        const ssize_t n = ::recvmsg(s, &msg, 0);
+        int fd = -1;
+        if (n > 0 && kind) *kind = dummy;
+        if (n > 0) {
+            for (struct cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm;
+                 cm = CMSG_NXTHDR(&msg, cm)) {
+                if (cm->cmsg_level == SOL_SOCKET &&
+                    cm->cmsg_type == SCM_RIGHTS) {
+                    memcpy(&fd, CMSG_DATA(cm), sizeof(int));
+                    break;
+                }
+            }
+        }
+        ::close(s);
+        return fd;
+    }
+
+    bool openDmabuf(quint32 pid, quint32 fd, size_t bytes)
+    {
+        if (_dmabufTried == QPair<quint32,quint32>(pid, fd))
+            return _dmabuf != nullptr;
+        _dmabufTried = QPair<quint32,quint32>(pid, fd);
+
+        closeDmabuf();
+
+        const QByteArray sock =
+            qEnvironmentVariableIsSet("FGFS_FD_SOCKET")
+                ? qgetenv("FGFS_FD_SOCKET")
+                : QByteArray("/tmp/fgfs-frame.sock");
+
+        int d = receiveFd(sock.constData());
+        if (d < 0) {
+            qWarning("FGVIEW: kein Deskriptor ueber %s", sock.constData());
+            return false;
+        }
+        void* p = ::mmap(nullptr, bytes, PROT_READ, MAP_SHARED, d, 0);
+        ::close(d);
+        if (p == MAP_FAILED) {
+            qWarning("FGVIEW: mmap des dmabuf fehlgeschlagen");
+            return false;
+        }
+        _dmabuf = static_cast<uchar*>(p);
+        _dmabufBytes = bytes;
+        qWarning("FGVIEW: Zero-Copy aktiv, %zu KiB gemappt", bytes / 1024);
+        return true;
+    }
+
+    void waitForFence()
+    {
+        if (!_fenceAvailable) return;
+
+        const QByteArray sock =
+            qEnvironmentVariableIsSet("FGFS_FD_SOCKET")
+                ? qgetenv("FGFS_FD_SOCKET")
+                : QByteArray("/tmp/fgfs-frame.sock");
+
+        char kind = 0;
+        const int f = receiveFd(sock.constData(), &kind);
+        if (f < 0 || kind != 'S') {
+            if (f >= 0) ::close(f);
+            _fenceMisses++;
+            if (_fenceMisses > 30) {
+                _fenceAvailable = false;   /* Simulator liefert keine */
+                qWarning("FGVIEW: kein Fence, lese ungesynct");
+            }
+            return;
+        }
+        _fenceMisses = 0;
+
+        struct pollfd pfd;
+        pfd.fd = f;
+        pfd.events = POLLIN;
+        ::poll(&pfd, 1, 100);              /* hoechstens 100 ms */
+        ::close(f);
+    }
+
+    void closeDmabuf()
+    {
+        if (_dmabuf) { ::munmap(_dmabuf, _dmabufBytes); _dmabuf = nullptr; }
+        _dmabufBytes = 0;
+    }
+
     bool openShm()
     {
         int fd = ::shm_open("/fgfs-frame", O_RDONLY, 0);
@@ -165,6 +345,7 @@ private:
 
     void closeShm()
     {
+        closeDmabuf();
         if (_base) { ::munmap(_base, _mapped); _base = nullptr; }
         if (_texture) { delete _texture; _texture = nullptr; }
     }
@@ -176,10 +357,18 @@ signals:
 private:
     uchar*  _base = nullptr;
     size_t  _mapped = 0;
+    uchar*  _dmabuf = nullptr;
+    bool    _fenceAvailable = true;
+    int     _fenceMisses = 0;
+    size_t  _dmabufBytes = 0;
+    QPair<quint32,quint32> _dmabufTried = qMakePair(0u, 0u);
     quint64 _lastSeq = 0;
     QImage  _image;
     QSGTexture* _texture = nullptr;
     QTimer  _poll, _fpsTimer;
+    qint64  _tPoll = 0, _tTex = 0, _tNode = 0;
+    int     _nPoll = 0, _nTex = 0, _nNode = 0;
+    QElapsedTimer _report;
     int _fps = 0, _framesSinceTick = 0;
 };
 
@@ -199,6 +388,8 @@ class ControlSender : public QObject
     Q_PROPERTY(qreal aileron  READ aileron  NOTIFY changed)
     Q_PROPERTY(qreal elevator READ elevator NOTIFY changed)
     Q_PROPERTY(bool  tiltActive READ tiltActive WRITE setTiltActive NOTIFY changed)
+    Q_PROPERTY(bool  cranking   READ cranking   NOTIFY changed)
+    Q_PROPERTY(bool  engineOn   READ engineOn   NOTIFY changed)
 
 public:
     explicit ControlSender(QObject* parent = nullptr) : QObject(parent)
@@ -218,15 +409,71 @@ public:
     qreal aileron()  const { return _aileron; }
     qreal elevator() const { return _elevator; }
     bool  tiltActive() const { return _tiltActive; }
+    bool  cranking() const { return _cranking; }
+    bool  engineOn() const { return _engineOn; }
 
     void setThrottle(qreal v) { _throttle = clamp01(v); emit changed(); }
     void setRudder(qreal v)   { _rudder = clamp11(v);   emit changed(); }
     void setFlaps(qreal v)    { _flaps = clamp01(v);    emit changed(); }
-    void setBrake(qreal v)    { _brake = clamp01(v);    emit changed(); }
+    void setBrake(qreal v)
+    {
+        _brake = clamp01(v);
+        /* Radbremsen liegen ausserhalb des generic-Protokolls */
+        const QString b = QString::number(_brake, 'f', 2);
+        sendTelnet(QStringList()
+                   << "set /controls/gear/brake-left " + b
+                   << "set /controls/gear/brake-right " + b);
+        emit changed();
+    }
     void setGearDown(bool v)  { _gearDown = v;          emit changed(); }
     void setTiltActive(bool v){ _tiltActive = v;        emit changed(); }
 
 public slots:
+    /* Vollstaendige Startsequenz ueber FlightGears Telnet-Kanal.
+       Das generic-Protokoll kann nur die Achsen setzen; Tankwahl,
+       Batterie und Primer brauchen Property-Zugriff. */
+    void startEngine()
+    {
+        if (_cranking) return;
+
+        QStringList cmds;
+        cmds << "set /controls/fuel/tank[0]/fuel_selector true"
+             << "set /controls/fuel/tank[1]/fuel_selector true"
+             << "set /controls/switches/master-bat true"
+             << "set /controls/switches/master-alt true"
+             << "set /controls/switches/master-avionics true"
+             << "set /controls/switches/magnetos 3"
+             << "set /controls/engines/current-engine/mixture 1.0"
+             << "set /controls/engines/current-engine/throttle 0.25"
+             << "set /controls/engines/engine[0]/primer 5"
+             << "set /controls/gear/brake-parking 0"
+             << "set /controls/switches/starter true";
+        sendTelnet(cmds);
+
+        _cranking = true;
+        _throttle = 0.25;
+        emit changed();
+
+        QTimer::singleShot(6000, this, [this]{
+            sendTelnet(QStringList()
+                       << "set /controls/switches/starter false");
+            _cranking = false;
+            _engineOn = true;
+            emit changed();
+        });
+    }
+
+    void stopEngine()
+    {
+        sendTelnet(QStringList()
+                   << "set /controls/engines/current-engine/mixture 0.0"
+                   << "set /controls/switches/magnetos 0"
+                   << "set /controls/switches/starter false");
+        _cranking = false;
+        _engineOn = false;
+        emit changed();
+    }
+
     /* Aktuelle Lage als Nullpunkt uebernehmen - so kann man auch
        im Liegen fliegen. */
     void calibrate()
@@ -295,6 +542,24 @@ private:
         return v < 0 ? -e : e;
     }
 
+    /* Kurzlebige Verbindung pro Befehlssatz - der Telnet-Kanal von
+       FlightGear haelt keine Sitzung ueber laengere Zeit sauber. */
+    void sendTelnet(const QStringList& cmds)
+    {
+        QTcpSocket* sock = new QTcpSocket(this);
+        connect(sock, &QTcpSocket::connected, this, [sock, cmds]{
+            for (const QString& c : cmds)
+                sock->write((c + "\r\n").toUtf8());
+            sock->flush();
+            QTimer::singleShot(400, sock, [sock]{
+                sock->disconnectFromHost();
+                sock->deleteLater();
+            });
+        });
+        connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+        sock->connectToHost(QHostAddress::LocalHost, 5401);
+    }
+
     static qreal clamp01(qreal v) { return qBound(0.0, v, 1.0); }
     static qreal clamp11(qreal v) { return qBound(-1.0, v, 1.0); }
 
@@ -310,6 +575,8 @@ private:
     qreal _aileron = 0.0, _elevator = 0.0;
     bool  _gearDown = true;
     bool  _tiltActive = false;
+    bool  _cranking = false;
+    bool  _engineOn = false;
 
     qreal _refX = 0, _refY = 0, _refZ = 0;
     bool  _haveRef = false;
@@ -325,6 +592,11 @@ int main(int argc, char* argv[])
     qmlRegisterType<FrameItem>("harbour.fgview", 1, 0, "FrameItem");
     qmlRegisterType<ControlSender>("harbour.fgview", 1, 0, "ControlSender");
     qmlRegisterType<FgRuntime>("harbour.fgview", 1, 0, "FgRuntime");
+
+    /* Beim Beenden alle Kindprozesse abraeumen - im Destruktor ist
+       es zu spaet, dann hat Qt die QProcess-Objekte schon zerlegt. */
+    /* Kein pkill hier - das reisst QProcess den Prozess unter den
+       Fuessen weg. FgRuntime raeumt seine Kinder selbst ab. */
 
     QScopedPointer<QQuickView> view(SailfishApp::createView());
     view->setSource(SailfishApp::pathTo("qml/harbour-fgview.qml"));
