@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.6.1
+Version:    0.7.0
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,18 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Mon Aug 31 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.0-1
+- GLES3 is the default backend: it renders scenery with textures, sun and
+  fog on this device and measured faster than Zink
+- New switch for starting in the air, off by default. FlightGear brings the
+  engine up by itself at altitude; on the ground the c172p needs the full
+  start-up procedure and its Nasal scripts reset magnetos and battery
+  behind anything set from outside
+- Protocol/fgtouch.xml is refreshed from the fgfs-sailfish package on every
+  start. An older copy pointed the throttle at
+  /controls/engines/current-engine/throttle, which the engine model does
+  not read, so the throttle had no effect
+
 * Mon Aug 24 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.3.0-1
 - Engine start button. FlightGear's generic protocol can only set the
   control axes, so fuel selectors, battery, magnetos and primer are set

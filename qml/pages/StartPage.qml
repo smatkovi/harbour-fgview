@@ -120,7 +120,7 @@ Page {
                 ComboBox {
                     id: backendBox
                     label: qsTr("Graphics backend")
-                    currentIndex: 0
+                    currentIndex: 2
                     menu: ContextMenu {
                         MenuItem { text: qsTr("Zink (complete)") }
                         MenuItem { text: qsTr("GLES2 (native)") }
@@ -139,6 +139,15 @@ Page {
                     text: qsTr("The native backends run without Mesa, but "
                              + "have no menus, HUD, glass cockpit displays "
                              + "or approach lights.")
+                }
+
+                TextSwitch {
+                    id: airborneSwitch
+                    text: qsTr("Start in the air")
+                    description: qsTr("Starts at 3000 ft with the engine "
+                                    + "running. On the ground the engine has "
+                                    + "to be started by hand.")
+                    checked: false
                 }
 
                 ComboBox {
@@ -175,7 +184,8 @@ Page {
                         } else {
                             rt.startSim(aircraftBox.ids[aircraftBox.currentIndex],
                                         airportBox.ids[airportBox.currentIndex],
-                                        backendBox.ids[backendBox.currentIndex])
+                                        backendBox.ids[backendBox.currentIndex],
+                                        airborneSwitch.checked)
                         }
                     }
                 }

@@ -219,11 +219,24 @@ public slots:
 
     void startSim(const QString& aircraft = "c172p",
                   const QString& airport  = "LOWW",
-                  const QString& backend  = "zink")
+                  const QString& backend  = "gles3",
+                  bool startInAir = false)
     {
         if (simRunning() || !dataReady()) return;
 
         _backend = backend;
+
+        /* The control protocol lives in FGData, which is downloaded once and
+           then kept.  An older copy sent the throttle to
+           /controls/engines/current-engine/throttle, which the engine model
+           does not read, so the throttle did nothing.  Refresh it every time
+           rather than only when the archive is unpacked. */
+        {
+            const QString dst = fgRoot() + "/Protocol/fgtouch.xml";
+            QDir().mkpath(fgRoot() + "/Protocol");
+            QFile::remove(dst);
+            QFile::copy("/opt/fgfs/share/fgtouch.xml", dst);
+        }
 
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("XDG_RUNTIME_DIR", "/run/display");
@@ -281,7 +294,12 @@ public slots:
                    << "--telnet=5401"
                    << "--aircraft=" + aircraft
                    << "--airport=" + airport
-                   << "--timeofday=noon");
+                   << "--timeofday=noon"
+                   /* In the air the engine comes up by itself.  On the ground
+                      the c172p wants the whole start-up procedure, and its
+                      Nasal scripts reset magnetos and battery behind us. */
+                   << (startInAir ? QStringList{ "--altitude=3000", "--vc=90" }
+                                  : QStringList{}));
 
         _status = tr("Simulator starting — this takes a minute or two");
         emit stateChanged();
