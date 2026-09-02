@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.0
+Version:    0.7.1
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,14 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Wed Sep 02 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.1-1
+- The engine start button is back on the flight page; it had been lost
+  when the page was rebuilt
+- The start sequence sets engine[0] as well as the c172p switch
+  properties: throttle and mixture went only to the current-engine alias,
+  which the engine model does not read, and cranks for eight seconds
+- Tilt steering is on from the start
+
 * Mon Aug 31 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.0-1
 - GLES3 is the default backend: it renders scenery with textures, sun and
   fog on this device and measured faster than Zink

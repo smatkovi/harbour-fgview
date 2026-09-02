@@ -437,26 +437,36 @@ public slots:
         if (_cranking) return;
 
         QStringList cmds;
+        /* Both the c172p switch properties, which its Nasal reads, and the
+           engine[0] properties, which the engine model reads.  The
+           current-engine alias is not enough: the model never sees it. */
         cmds << "set /controls/fuel/tank[0]/fuel_selector true"
              << "set /controls/fuel/tank[1]/fuel_selector true"
              << "set /controls/switches/master-bat true"
+             << "set /controls/electric/battery-switch true"
              << "set /controls/switches/master-alt true"
              << "set /controls/switches/master-avionics true"
              << "set /controls/switches/magnetos 3"
+             << "set /controls/engines/engine[0]/magnetos 3"
+             << "set /controls/engines/engine[0]/mixture 1.0"
              << "set /controls/engines/current-engine/mixture 1.0"
+             << "set /controls/engines/engine[0]/throttle 0.25"
              << "set /controls/engines/current-engine/throttle 0.25"
              << "set /controls/engines/engine[0]/primer 5"
              << "set /controls/gear/brake-parking 0"
-             << "set /controls/switches/starter true";
+             << "set /controls/switches/starter true"
+             << "set /controls/engines/engine[0]/starter true";
         sendTelnet(cmds);
 
         _cranking = true;
         _throttle = 0.25;
         emit changed();
 
-        QTimer::singleShot(6000, this, [this]{
+        /* Eight seconds: at a few frames per second six were not enough. */
+        QTimer::singleShot(8000, this, [this]{
             sendTelnet(QStringList()
-                       << "set /controls/switches/starter false");
+                       << "set /controls/switches/starter false"
+                       << "set /controls/engines/engine[0]/starter false");
             _cranking = false;
             _engineOn = true;
             emit changed();
@@ -466,9 +476,12 @@ public slots:
     void stopEngine()
     {
         sendTelnet(QStringList()
+                   << "set /controls/engines/engine[0]/mixture 0.0"
                    << "set /controls/engines/current-engine/mixture 0.0"
                    << "set /controls/switches/magnetos 0"
-                   << "set /controls/switches/starter false");
+                   << "set /controls/engines/engine[0]/magnetos 0"
+                   << "set /controls/switches/starter false"
+                   << "set /controls/engines/engine[0]/starter false");
         _cranking = false;
         _engineOn = false;
         emit changed();
@@ -574,7 +587,7 @@ private:
     qreal _throttle = 0.0, _rudder = 0.0, _flaps = 0.0, _brake = 0.0;
     qreal _aileron = 0.0, _elevator = 0.0;
     bool  _gearDown = true;
-    bool  _tiltActive = false;
+    bool  _tiltActive = true;   /* first reading calibrates the reference */
     bool  _cranking = false;
     bool  _engineOn = false;
 

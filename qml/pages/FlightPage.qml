@@ -155,6 +155,14 @@ Page {
 
         Button {
             width: parent.width
+            text: ctl.cranking ? "Anlasser..." : (ctl.engineOn ? "Motor aus" : "Motor an")
+            color: ctl.engineOn ? Theme.highlightColor : Theme.primaryColor
+            enabled: !ctl.cranking
+            onClicked: ctl.engineOn ? ctl.stopEngine() : ctl.startEngine()
+        }
+
+        Button {
+            width: parent.width
             text: ctl.tiltActive ? "Neigung an" : "Neigung aus"
             color: ctl.tiltActive ? Theme.highlightColor : Theme.primaryColor
             onClicked: {
