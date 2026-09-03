@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.1
+Version:    0.7.2
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,9 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.2-1
+- DrawThreadPerContext for the GLES backends, single-threaded for Zink
+
 * Wed Sep 02 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.1-1
 - The engine start button is back on the flight page; it had been lost
   when the page was rebuilt
