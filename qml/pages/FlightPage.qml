@@ -128,7 +128,7 @@ Page {
                 width: Theme.paddingLarge
                 height: parent.height - 4
                 y: 2
-                x: (parent.width - width) / 2 * (1 + ctl.rudder)
+                x: (parent.width - width) / 2 * (1 - ctl.rudder)
                 radius: Theme.paddingSmall
                 color: Theme.highlightColor
             }
@@ -139,7 +139,9 @@ Page {
                 onPressed: setFromX(mouse.x)
                 onReleased: ctl.rudder = 0        // selbstzentrierend
                 function setFromX(x) {
-                    ctl.rudder = Math.max(-1, Math.min(1, (x / width) * 2 - 1))
+                    // FlightGear: +1 is right pedal.  The slider reads
+                    // right-to-left in this orientation, hence the sign.
+                    ctl.rudder = -Math.max(-1, Math.min(1, (x / width) * 2 - 1))
                 }
             }
         }
@@ -155,6 +157,12 @@ Page {
             right: parent.right
             verticalCenter: parent.verticalCenter
             margins: Theme.paddingMedium
+        }
+
+        Button {
+            width: parent.width
+            text: "Sicht"
+            onClicked: ctl.cycleView()
         }
 
         Button {

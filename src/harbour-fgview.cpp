@@ -487,6 +487,13 @@ public slots:
         emit changed();
     }
 
+    /* Next view (cockpit, chase, tower, ...): FlightGear's own view-cycle
+       command, over the same telnet channel the engine start uses. */
+    void cycleView()
+    {
+        sendTelnet(QStringList() << "run view-cycle");
+    }
+
     /* Aktuelle Lage als Nullpunkt uebernehmen - so kann man auch
        im Liegen fliegen. */
     void calibrate()
