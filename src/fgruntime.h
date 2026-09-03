@@ -295,6 +295,14 @@ public slots:
                    << "--aircraft=" + aircraft
                    << "--airport=" + airport
                    << "--timeofday=noon"
+                   /* --disable-ai-models leaves the traffic manager on; it
+                      filled the scene with fifty scheduled aircraft, each
+                      with its own motion, model and draw calls. */
+                   << "--disable-ai-traffic"
+                   << "--prop:/sim/traffic-manager/enabled=false"
+                   /* 60 Hz is plenty for a light aircraft and halves the
+                      flight model's share; measured 83 -> 58 ms per frame. */
+                   << "--prop:/sim/model-hz=60"
                    /* Draw on its own thread; the update phase then overlaps
                       with the draw - measured 84 -> 47 ms per frame. */
                    << (backend != "zink"

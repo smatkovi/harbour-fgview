@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.2
+Version:    0.7.3
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,12 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.3-1
+- The traffic manager is off: --disable-ai-models did not cover it, and
+  it put fifty scheduled aircraft into the scene
+- Flight model at 60 Hz; plenty for a light aircraft, and the frame goes
+  from 83 to 58 ms with the c172p
+
 * Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.2-1
 - DrawThreadPerContext for the GLES backends, single-threaded for Zink
 
