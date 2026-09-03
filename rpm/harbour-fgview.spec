@@ -53,7 +53,8 @@ desktop-file-install --delete-original       \
 %changelog
 * Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.4-1
 - The flight page ignores the back gesture; the rudder slider is a
-  horizontal swipe along the same edge. A button ends the flight
+  horizontal swipe along the same edge. Closing the app is the system
+  gesture from the top edge, as everywhere else
 - Throttle also to current-engine, so the cockpit lever moves
 
 * Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.3-1

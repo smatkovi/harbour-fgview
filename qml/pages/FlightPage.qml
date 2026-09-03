@@ -159,13 +159,6 @@ Page {
 
         Button {
             width: parent.width
-            text: "Beenden"
-            color: Theme.secondaryColor
-            onClicked: pageStack.pop()
-        }
-
-        Button {
-            width: parent.width
             text: ctl.cranking ? "Anlasser..." : (ctl.engineOn ? "Motor aus" : "Motor an")
             color: ctl.engineOn ? Theme.highlightColor : Theme.primaryColor
             enabled: !ctl.cranking
