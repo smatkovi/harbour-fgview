@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.3
+Version:    0.7.4
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,11 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.4-1
+- The flight page ignores the back gesture; the rudder slider is a
+  horizontal swipe along the same edge. A button ends the flight
+- Throttle also to current-engine, so the cockpit lever moves
+
 * Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.3-1
 - The traffic manager is off: --disable-ai-models did not cover it, and
   it put fifty scheduled aircraft into the scene

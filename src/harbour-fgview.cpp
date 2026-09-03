@@ -505,11 +505,13 @@ private slots:
         updateFromSensors();
 
         char buf[160];
+        /* The throttle twice: engine[0] is what the engine model reads,
+           current-engine is what the cockpit lever's animation reads. */
         const int n = qsnprintf(buf, sizeof buf,
-                                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d\n",
+                                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.4f\n",
                                 _aileron, _elevator, _rudder,
                                 _throttle, _brake, _flaps,
-                                _gearDown ? 1 : 0);
+                                _gearDown ? 1 : 0, _throttle);
         if (n > 0)
             _sock.writeDatagram(buf, n, QHostAddress::LocalHost, 5501);
     }

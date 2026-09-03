@@ -6,6 +6,10 @@ Page {
     id: page
     allowedOrientations: Orientation.Landscape
     backgroundColor: "black"
+    // The rudder slider is a horizontal swipe along the bottom edge, which
+    // is also the back gesture.  Leaving the page is the button's job.
+    backNavigation: false
+    showNavigationIndicator: false
 
     ControlSender { id: ctl }
 
@@ -151,6 +155,13 @@ Page {
             right: parent.right
             verticalCenter: parent.verticalCenter
             margins: Theme.paddingMedium
+        }
+
+        Button {
+            width: parent.width
+            text: "Beenden"
+            color: Theme.secondaryColor
+            onClicked: pageStack.pop()
         }
 
         Button {
