@@ -514,11 +514,20 @@ private slots:
         char buf[160];
         /* The throttle twice: engine[0] is what the engine model reads,
            current-engine is what the cockpit lever's animation reads. */
-        const int n = qsnprintf(buf, sizeof buf,
-                                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.4f\n",
-                                _aileron, _elevator, _rudder,
-                                _throttle, _brake, _flaps,
-                                _gearDown ? 1 : 0, _throttle);
+        /* Not qsnprintf: under a German locale it wrote 0,2500 and the
+           comma separated protocol read twice as many fields - the throttle
+           got 9943, the lever field 2500.  QByteArray::number is always the
+           C locale. */
+        const QByteArray line = QByteArray::number(_aileron, 'f', 4) + ','
+            + QByteArray::number(_elevator, 'f', 4) + ','
+            + QByteArray::number(_rudder, 'f', 4) + ','
+            + QByteArray::number(_throttle, 'f', 4) + ','
+            + QByteArray::number(_brake, 'f', 4) + ','
+            + QByteArray::number(_flaps, 'f', 4) + ','
+            + QByteArray::number(_gearDown ? 1 : 0) + ','
+            + QByteArray::number(_throttle, 'f', 4) + '\n';
+        const int n = qMin(int(line.size()), int(sizeof buf) - 1);
+        memcpy(buf, line.constData(), n); buf[n] = 0;
         if (n > 0)
             _sock.writeDatagram(buf, n, QHostAddress::LocalHost, 5501);
     }

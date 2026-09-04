@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.5
+Version:    0.7.6
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,11 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.6-1
+- Control packets use a decimal point regardless of locale. Under the
+  German locale the comma separated line carried twice the fields, the
+  throttle arrived as 9943 and the engine never got fuel
+
 * Thu Sep 03 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.5-1
 - Rudder slider sign: right is right pedal now
 - "Sicht" button cycles the views
