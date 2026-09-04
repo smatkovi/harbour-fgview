@@ -503,6 +503,9 @@ public slots:
             _refY = r->y();
             _refZ = r->z();
             _haveRef = true;
+            qWarning("tilt: reference x=%.2f y=%.2f z=%.2f", _refX, _refY, _refZ);
+        } else {
+            qWarning("tilt: calibrate without a reading (sensor active=%d)", _accel.isActive() ? 1 : 0);
         }
     }
 
@@ -546,6 +549,12 @@ private:
            Kippen vor/zurueck        -> Hoehenruder */
         const qreal dx = r->x() - _refX;
         const qreal dy = r->y() - _refY;
+        {
+            static int n = 0;
+            if (++n % 60 == 0)
+                qWarning("tilt: raw x=%.2f y=%.2f z=%.2f  ref x=%.2f y=%.2f  -> dx=%.2f dy=%.2f",
+                         r->x(), r->y(), r->z(), _refX, _refY, dx, dy);
+        }
 
         const qreal G = 9.81;
         qreal roll  = qBound(-1.0, dy / G, 1.0);
