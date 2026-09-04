@@ -16,6 +16,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QAccelerometer>
+#include <cmath>
 #include <QGyroscope>
 #include <QtMath>
 
@@ -547,18 +548,25 @@ private:
         /* Landscape: Geraet liegt quer.
            Rollen um die Laengsachse -> Querruder
            Kippen vor/zurueck        -> Hoehenruder */
-        const qreal dx = r->x() - _refX;
-        const qreal dy = r->y() - _refY;
+        /* Angles, not components.  The old dx/G assumed the reference lay
+           flat; held at 40 degrees, as one holds a phone to look at it,
+           that left 20 percent of travel one way and 100 the other.  Thirty
+           degrees of tilt either side of the reference is full deflection. */
+        const qreal MAX_ANGLE = 30.0 * M_PI / 180.0;
+        const qreal pitchAngle = std::atan2(r->x(), r->z());
+        const qreal rollAngle  = std::atan2(r->y(), std::sqrt(r->x() * r->x() + r->z() * r->z()));
+        const qreal refPitch   = std::atan2(_refX, _refZ);
+        const qreal refRoll    = std::atan2(_refY, std::sqrt(_refX * _refX + _refZ * _refZ));
         {
             static int n = 0;
             if (++n % 60 == 0)
-                qWarning("tilt: raw x=%.2f y=%.2f z=%.2f  ref x=%.2f y=%.2f  -> dx=%.2f dy=%.2f",
-                         r->x(), r->y(), r->z(), _refX, _refY, dx, dy);
+                qWarning("tilt: raw x=%.2f y=%.2f z=%.2f  pitch %.0f deg (ref %.0f)  roll %.0f deg (ref %.0f)",
+                         r->x(), r->y(), r->z(), pitchAngle * 180 / M_PI, refPitch * 180 / M_PI,
+                         rollAngle * 180 / M_PI, refRoll * 180 / M_PI);
         }
 
-        const qreal G = 9.81;
-        qreal roll  = qBound(-1.0, dy / G, 1.0);
-        qreal pitch = qBound(-1.0, dx / G, 1.0);
+        qreal roll  = qBound(-1.0, (rollAngle  - refRoll)  / MAX_ANGLE, 1.0);
+        qreal pitch = qBound(-1.0, (pitchAngle - refPitch) / MAX_ANGLE, 1.0);
 
         roll  = shape(roll);
         pitch = shape(pitch);

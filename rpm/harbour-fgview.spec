@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.7
+Version:    0.7.8
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,12 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.8-1
+- Tilt steering works on angles: thirty degrees either side of the
+  reference is full deflection, whatever the reference attitude. The old
+  mapping assumed a flat reference and left twenty percent of elevator
+  travel one way when the phone was held at forty degrees
+
 * Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.7-1
 - Rudder slider: right is right again; the earlier inversion followed a
   reading from a broken packet
