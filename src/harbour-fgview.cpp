@@ -569,7 +569,9 @@ private:
         }
 
         qreal roll  = qBound(-1.0, (rollAngle  - refRoll)  / MAX_ANGLE, 1.0);
-        qreal pitch = qBound(-1.0, (pitchAngle - refPitch) / MAX_ANGLE, 1.0);
+        /* Tilting the top edge towards the pilot is pulling the yoke, which
+           FlightGear wants as a negative elevator - hence the sign. */
+        qreal pitch = qBound(-1.0, -(pitchAngle - refPitch) / MAX_ANGLE, 1.0);
 
         roll  = shape(roll);
         pitch = shape(pitch);
