@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.8
+Version:    0.7.9
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,11 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.9-1
+- Tilt steering more direct: 18 degrees for full deflection, 3 percent
+  dead zone, less expo. Seven degrees of tilt now give about thirty
+  percent instead of eight
+
 * Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.8-1
 - Tilt steering works on angles: thirty degrees either side of the
   reference is full deflection, whatever the reference attitude. The old

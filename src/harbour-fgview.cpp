@@ -552,7 +552,10 @@ private:
            flat; held at 40 degrees, as one holds a phone to look at it,
            that left 20 percent of travel one way and 100 the other.  Thirty
            degrees of tilt either side of the reference is full deflection. */
-        const qreal MAX_ANGLE = 30.0 * M_PI / 180.0;
+        /* 18 degrees either side of the reference is full deflection.  Thirty
+           was too little: seven degrees of tilt gave eight percent of
+           elevator after dead zone and expo, and nothing happened. */
+        const qreal MAX_ANGLE = 18.0 * M_PI / 180.0;
         const qreal pitchAngle = std::atan2(r->x(), r->z());
         const qreal rollAngle  = std::atan2(r->y(), std::sqrt(r->x() * r->x() + r->z() * r->z()));
         const qreal refPitch   = std::atan2(_refX, _refZ);
@@ -582,10 +585,10 @@ private:
     /* Totzone plus Expo - ohne das ist Praezisionsflug unmoeglich */
     static qreal shape(qreal v)
     {
-        const qreal dead = 0.06;
+        const qreal dead = 0.03;
         if (qAbs(v) < dead) return 0.0;
         const qreal s = (qAbs(v) - dead) / (1.0 - dead);
-        const qreal k = 0.6;
+        const qreal k = 0.35;
         const qreal e = k * s * s * s + (1.0 - k) * s;
         return v < 0 ? -e : e;
     }
