@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.10
+Version:    0.8.0
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,25 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.0-1
+- First release that flies: engine start, throttle, rudder and tilt
+  steering all reach the aircraft, the c172p takes off and can be flown
+- Tilt steering works on angles, symmetric around whatever attitude the
+  phone was zeroed in; 18 degrees is full deflection. Top edge towards
+  the pilot is pulling
+- Control packets use a decimal point whatever the system locale; under
+  a German locale the comma separated line carried twice the fields and
+  nothing reached the aircraft as intended
+- Engine start button back on the flight page, start sequence sets
+  engine[0] as well as the c172p switch properties
+- Flight page ignores the back gesture; the rudder slider is a horizontal
+  swipe along the same edge. Closing the app is the system gesture
+- "Sicht" cycles the views
+- Optional start in the air with the engine running
+- GLES3 is the default backend, draw on its own thread, flight model at
+  60 Hz, traffic manager off. Needs fgfs-sailfish 2020.3.19-5 and
+  fgfs-sailfish-gles 2020.3.19-7 or newer
+
 * Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.10-1
 - Pitch axis the other way round: top edge towards the pilot is pulling
 

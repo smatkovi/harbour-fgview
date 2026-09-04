@@ -504,9 +504,6 @@ public slots:
             _refY = r->y();
             _refZ = r->z();
             _haveRef = true;
-            qWarning("tilt: reference x=%.2f y=%.2f z=%.2f", _refX, _refY, _refZ);
-        } else {
-            qWarning("tilt: calibrate without a reading (sensor active=%d)", _accel.isActive() ? 1 : 0);
         }
     }
 
@@ -560,14 +557,6 @@ private:
         const qreal rollAngle  = std::atan2(r->y(), std::sqrt(r->x() * r->x() + r->z() * r->z()));
         const qreal refPitch   = std::atan2(_refX, _refZ);
         const qreal refRoll    = std::atan2(_refY, std::sqrt(_refX * _refX + _refZ * _refZ));
-        {
-            static int n = 0;
-            if (++n % 60 == 0)
-                qWarning("tilt: raw x=%.2f y=%.2f z=%.2f  pitch %.0f deg (ref %.0f)  roll %.0f deg (ref %.0f)",
-                         r->x(), r->y(), r->z(), pitchAngle * 180 / M_PI, refPitch * 180 / M_PI,
-                         rollAngle * 180 / M_PI, refRoll * 180 / M_PI);
-        }
-
         qreal roll  = qBound(-1.0, (rollAngle  - refRoll)  / MAX_ANGLE, 1.0);
         /* Tilting the top edge towards the pilot is pulling the yoke, which
            FlightGear wants as a negative elevator - hence the sign. */
