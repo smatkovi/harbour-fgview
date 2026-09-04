@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.7.6
+Version:    0.7.7
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -51,6 +51,12 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.7-1
+- Rudder slider: right is right again; the earlier inversion followed a
+  reading from a broken packet
+- Tilt reference is taken a second after the flight page appears, not at
+  the first sensor reading
+
 * Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.7.6-1
 - Control packets use a decimal point regardless of locale. Under the
   German locale the comma separated line carried twice the fields, the

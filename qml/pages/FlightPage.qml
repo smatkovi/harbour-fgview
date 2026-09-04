@@ -13,6 +13,13 @@ Page {
 
     ControlSender { id: ctl }
 
+    // Take the tilt reference once the page is up and the phone is in the
+    // hand, not at the first sensor reading, which may still be the table.
+    Timer {
+        interval: 1200; running: true; repeat: false
+        onTriggered: ctl.calibrate()
+    }
+
     // ---- Das gerenderte Bild --------------------------------------
 
     FrameItem {
@@ -128,7 +135,7 @@ Page {
                 width: Theme.paddingLarge
                 height: parent.height - 4
                 y: 2
-                x: (parent.width - width) / 2 * (1 - ctl.rudder)
+                x: (parent.width - width) / 2 * (1 + ctl.rudder)
                 radius: Theme.paddingSmall
                 color: Theme.highlightColor
             }
@@ -139,9 +146,10 @@ Page {
                 onPressed: setFromX(mouse.x)
                 onReleased: ctl.rudder = 0        // selbstzentrierend
                 function setFromX(x) {
-                    // FlightGear: +1 is right pedal.  The slider reads
-                    // right-to-left in this orientation, hence the sign.
-                    ctl.rudder = -Math.max(-1, Math.min(1, (x / width) * 2 - 1))
+                    // FlightGear: +1 is right pedal, and right on the
+                    // slider is right.  (The inverted reading that once
+                    // suggested otherwise came from a broken packet.)
+                    ctl.rudder = Math.max(-1, Math.min(1, (x / width) * 2 - 1))
                 }
             }
         }
