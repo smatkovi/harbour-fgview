@@ -557,7 +557,11 @@ private:
         const qreal rollAngle  = std::atan2(r->y(), std::sqrt(r->x() * r->x() + r->z() * r->z()));
         const qreal refPitch   = std::atan2(_refX, _refZ);
         const qreal refRoll    = std::atan2(_refY, std::sqrt(_refX * _refX + _refZ * _refZ));
-        qreal roll  = qBound(-1.0, (rollAngle  - refRoll)  / MAX_ANGLE, 1.0);
+        /* Rolling the phone is a wider, easier motion than pitching it, so
+           the roll axis gets a range of its own - 35 degrees for full
+           aileron against 18 for full elevator. */
+        const qreal ROLL_ANGLE = 35.0 * M_PI / 180.0;
+        qreal roll  = qBound(-1.0, (rollAngle  - refRoll)  / ROLL_ANGLE, 1.0);
         /* Tilting the top edge towards the pilot is pulling the yoke, which
            FlightGear wants as a negative elevator - hence the sign. */
         qreal pitch = qBound(-1.0, -(pitchAngle - refPitch) / MAX_ANGLE, 1.0);

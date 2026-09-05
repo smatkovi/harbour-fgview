@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.8.1
+Version:    0.8.2
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,10 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Sep 05 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.2-1
+- Roll axis less sensitive: 35 degrees for full aileron, against 18 for
+  full elevator. Rolling the phone is a wider motion than pitching it
+
 * Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.1-1
 - Simulation settings page: trees, flight model rate, AI traffic, detail
   range, texture filtering, particles. Defaults are the values measured
