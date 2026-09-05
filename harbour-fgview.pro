@@ -14,6 +14,7 @@ DISTFILES += \
     qml/harbour-fgview.qml \
     qml/pages/FlightPage.qml \
     qml/pages/StartPage.qml \
+    qml/pages/SettingsPage.qml \
     rpm/harbour-fgview.spec \
     harbour-fgview.desktop
 

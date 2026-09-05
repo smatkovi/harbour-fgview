@@ -1,12 +1,25 @@
 import QtQuick 2.6
 import Sailfish.Silica 1.0
 import harbour.fgview 1.0
+import Nemo.Configuration 1.0
 
 Page {
     id: page
     allowedOrientations: Orientation.All
 
     property FgRuntime rt
+
+    // the same group the settings page writes
+    ConfigurationGroup {
+        id: simCfg
+        path: "/apps/harbour-fgview/sim"
+        property real vegetation: 0.0
+        property int  modelHz: 60
+        property bool traffic: false
+        property int  detailRange: 1500
+        property int  filtering: 1
+        property bool particles: true
+    }
 
     SilicaFlickable {
         anchors.fill: parent
@@ -185,16 +198,21 @@ Page {
                             rt.startSim(aircraftBox.ids[aircraftBox.currentIndex],
                                         airportBox.ids[airportBox.currentIndex],
                                         backendBox.ids[backendBox.currentIndex],
-                                        airborneSwitch.checked)
+                                        airborneSwitch.checked,
+                                        [ "--prop:/sim/rendering/vegetation-density=" + simCfg.vegetation,
+                                          "--prop:/sim/model-hz=" + simCfg.modelHz,
+                                          "--prop:/sim/traffic-manager/enabled=" + (simCfg.traffic ? "true" : "false"),
+                                          "--prop:/sim/rendering/static-lod/detailed=" + simCfg.detailRange,
+                                          "--prop:/sim/rendering/filtering=" + simCfg.filtering,
+                                          "--prop:/sim/rendering/particles=" + (simCfg.particles ? "true" : "false") ])
                         }
                     }
                 }
 
                 Button {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: qsTr("Simulator log")
-                    onClicked: pageStack.push(Qt.resolvedUrl("LogPage.qml"),
-                                              { rt: rt })
+                    text: qsTr("Simulation settings")
+                    onClicked: pageStack.push(Qt.resolvedUrl("SettingsPage.qml"))
                 }
 
                 Button {

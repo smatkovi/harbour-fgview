@@ -220,7 +220,8 @@ public slots:
     void startSim(const QString& aircraft = "c172p",
                   const QString& airport  = "LOWW",
                   const QString& backend  = "gles3",
-                  bool startInAir = false)
+                  bool startInAir = false,
+                  const QStringList& extraProps = QStringList())
     {
         if (simRunning() || !dataReady()) return;
 
@@ -298,11 +299,10 @@ public slots:
                    /* --disable-ai-models leaves the traffic manager on; it
                       filled the scene with fifty scheduled aircraft, each
                       with its own motion, model and draw calls. */
-                   << "--disable-ai-traffic"
-                   << "--prop:/sim/traffic-manager/enabled=false"
-                   /* 60 Hz is plenty for a light aircraft and halves the
-                      flight model's share; measured 83 -> 58 ms per frame. */
-                   << "--prop:/sim/model-hz=60"
+                   /* traffic, model rate, trees and the rest come from the
+                      settings page (extraProps), with the measured values as
+                      defaults; --disable-ai-models stays, the scenario
+                      objects are not wanted either way */
                    /* Draw on its own thread; the update phase then overlaps
                       with the draw - measured 84 -> 47 ms per frame. */
                    << (backend != "zink"
@@ -312,7 +312,8 @@ public slots:
                       the c172p wants the whole start-up procedure, and its
                       Nasal scripts reset magnetos and battery behind us. */
                    << (startInAir ? QStringList{ "--altitude=3000", "--vc=90" }
-                                  : QStringList{}));
+                                  : QStringList{})
+                   << extraProps);
 
         _status = tr("Simulator starting — this takes a minute or two");
         emit stateChanged();

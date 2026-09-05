@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.8.0
+Version:    0.8.1
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -9,6 +9,7 @@ Source100:  harbour-fgview.yaml
 
 Requires:   sailfishsilica-qt5 >= 0.10.9
 Requires:   qt5-qtdeclarative-import-sensors
+Requires:   nemo-qml-plugin-configuration-qt5
 Requires:   fgfs-sailfish >= 2020.3.19
 Requires:   curl
 Requires:   aria2
@@ -51,6 +52,12 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.1-1
+- Simulation settings page: trees, flight model rate, AI traffic, detail
+  range, texture filtering, particles. Defaults are the values measured
+  on the device, trees off. Thirty percent still reads as forest and
+  takes a third off the frame time; the slider goes from none to full
+
 * Fri Sep 04 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.0-1
 - First release that flies: engine start, throttle, rudder and tilt
   steering all reach the aircraft, the c172p takes off and can be flown
