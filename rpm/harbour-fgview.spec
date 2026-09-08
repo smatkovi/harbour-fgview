@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.8.3
+Version:    0.8.4
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,12 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sun Sep 06 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.4-1
+- Button captions wrap instead of being cut off; Silica's Button keeps its
+  label on one line, which the narrow column could not fit
+- Two fingers on the picture change the field of view between 20 and 110
+  degrees
+
 * Sun Sep 06 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.3-1
 - Flaps button walks the c172p's own detents - up, 10, 20, 30 degrees -
   instead of half steps that sit between them, which made the flaps look

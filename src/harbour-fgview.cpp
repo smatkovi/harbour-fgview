@@ -495,6 +495,13 @@ public slots:
         sendTelnet(QStringList() << "run view-cycle");
     }
 
+    /* Field of view in degrees, from the pinch gesture. */
+    void setFieldOfView(int deg)
+    {
+        sendTelnet(QStringList()
+                   << QString("set /sim/current-view/field-of-view %1").arg(deg));
+    }
+
     /* Aktuelle Lage als Nullpunkt uebernehmen - so kann man auch
        im Liegen fliegen. */
     void calibrate()

@@ -15,6 +15,7 @@ DISTFILES += \
     qml/pages/FlightPage.qml \
     qml/pages/StartPage.qml \
     qml/pages/SettingsPage.qml \
+    qml/pages/FlatButton.qml \
     rpm/harbour-fgview.spec \
     harbour-fgview.desktop
 

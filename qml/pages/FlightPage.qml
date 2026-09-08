@@ -27,6 +27,23 @@ Page {
         anchors.fill: parent
     }
 
+    // Two fingers change the field of view.  FlightGear takes it over the
+    // telnet channel; only whole degrees are sent, so the pinch does not
+    // flood it.
+    PinchArea {
+        anchors.fill: parent
+        property real startFov: 65
+        property int lastSent: 65
+        onPinchStarted: startFov = lastSent
+        onPinchUpdated: {
+            var fov = Math.max(20, Math.min(110, startFov / pinch.scale))
+            if (Math.round(fov) !== lastSent) {
+                lastSent = Math.round(fov)
+                ctl.setFieldOfView(lastSent)
+            }
+        }
+    }
+
     Label {
         anchors.centerIn: parent
         visible: !frame.connected
@@ -167,13 +184,13 @@ Page {
             margins: Theme.paddingMedium
         }
 
-        Button {
+        FlatButton {
             width: parent.width
             text: "Sicht"
             onClicked: ctl.cycleView()
         }
 
-        Button {
+        FlatButton {
             width: parent.width
             text: ctl.cranking ? "Anlasser..." : (ctl.engineOn ? "Motor aus" : "Motor an")
             color: ctl.engineOn ? Theme.highlightColor : Theme.primaryColor
@@ -181,7 +198,7 @@ Page {
             onClicked: ctl.engineOn ? ctl.stopEngine() : ctl.startEngine()
         }
 
-        Button {
+        FlatButton {
             width: parent.width
             text: ctl.tiltActive ? "Neigung an" : "Neigung aus"
             color: ctl.tiltActive ? Theme.highlightColor : Theme.primaryColor
@@ -191,20 +208,20 @@ Page {
             }
         }
 
-        Button {
+        FlatButton {
             width: parent.width
             text: "Nullen"
             enabled: ctl.tiltActive
             onClicked: ctl.calibrate()
         }
 
-        Button {
+        FlatButton {
             width: parent.width
             text: ctl.gearDown ? "Fahrwerk aus" : "Fahrwerk ein"
             onClicked: ctl.gearDown = !ctl.gearDown
         }
 
-        Button {
+        FlatButton {
             width: parent.width
             // The c172p's detents: up, 10, 20, 30 degrees.  Half steps sit
             // between them and the lever settles on whichever is nearer,
@@ -223,7 +240,7 @@ Page {
             onPressAndHold: ctl.flaps = 0.0   // fully up in one go
         }
 
-        Button {
+        FlatButton {
             width: parent.width
             text: "Bremse"
             down: ctl.brake > 0.5
