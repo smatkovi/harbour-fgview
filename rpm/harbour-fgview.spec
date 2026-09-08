@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.8.2
+Version:    0.8.3
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,11 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sun Sep 06 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.3-1
+- Flaps button walks the c172p's own detents - up, 10, 20, 30 degrees -
+  instead of half steps that sit between them, which made the flaps look
+  stuck at the first notch. A long press retracts them fully
+
 * Sat Sep 05 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.2-1
 - Roll axis less sensitive: 35 degrees for full aileron, against 18 for
   full elevator. Rolling the phone is a wider motion than pitching it

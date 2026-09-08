@@ -206,8 +206,21 @@ Page {
 
         Button {
             width: parent.width
-            text: "Klappen " + Math.round(ctl.flaps * 100) + "%"
-            onClicked: ctl.flaps = ctl.flaps >= 1.0 ? 0.0 : ctl.flaps + 0.5
+            // The c172p's detents: up, 10, 20, 30 degrees.  Half steps sit
+            // between them and the lever settles on whichever is nearer,
+            // which made the flaps look stuck at the first notch.
+            property var detents: [0.0, 1/3, 2/3, 1.0]
+            property var degrees: [0, 10, 20, 30]
+            function nearest() {
+                var best = 0
+                for (var i = 1; i < detents.length; ++i)
+                    if (Math.abs(detents[i] - ctl.flaps) < Math.abs(detents[best] - ctl.flaps))
+                        best = i
+                return best
+            }
+            text: "Klappen " + degrees[nearest()] + "\u00b0"
+            onClicked: ctl.flaps = detents[(nearest() + 1) % detents.length]
+            onPressAndHold: ctl.flaps = 0.0   // fully up in one go
         }
 
         Button {
