@@ -31,6 +31,7 @@ Page {
         frameLimit:   0,         // 0 = uncapped, FlightGear's own default
         particles:    true,
         sound:        false,
+        pauseInBackground: true, // freeze the simulation while the app is not on screen
         sceneryRefresh: false,   // check offline, fetch only what is missing
         sceneryInFlight: false,  // FlightGear's TerraSync: tiles around the aircraft
         realWeather:  false      // METAR from the net; needs a connection in flight
@@ -55,6 +56,7 @@ Page {
         property bool sceneryRefresh: false
         property bool sceneryInFlight: false
         property bool realWeather: false
+        property bool pauseInBackground: true
     }
 
     // The controls are written to as well as read from, so a reset has to
@@ -64,6 +66,7 @@ Page {
         var d = page.defaults
         cfg.vegetation = d.vegetation;   cfg.buildings = d.buildings
         cfg.sceneryRefresh = d.sceneryRefresh
+        cfg.pauseInBackground = d.pauseInBackground
         cfg.sceneryInFlight = d.sceneryInFlight
         cfg.realWeather = d.realWeather
         cfg.detailRange = d.detailRange; cfg.visibility = d.visibility
@@ -76,6 +79,7 @@ Page {
         treeSlider.value        = d.vegetation
 
         sceneryRefreshSwitch.checked = d.sceneryRefresh
+        pauseSwitch.checked = d.pauseInBackground
         sceneryInFlightSwitch.checked = d.sceneryInFlight
         realWeatherSwitch.checked = d.realWeather
         buildingSwitch.checked  = d.buildings
@@ -111,6 +115,16 @@ Page {
             PageHeader { title: qsTr("Simulation") }
 
             // ---- Scenery ------------------------------------------------
+            SectionHeader { text: qsTr("Application") }
+
+            TextSwitch {
+                id: pauseSwitch
+                text: qsTr("Pause when in the background")
+                description: qsTr("Freezes the flight and the clock while the app is minimised or the screen is off, and throttles the simulator to two frames a second so it stops eating the battery. Resumes when the app comes back.")
+                checked: cfg.pauseInBackground
+                onCheckedChanged: cfg.pauseInBackground = checked
+            }
+
             SectionHeader { text: qsTr("Scenery") }
 
             Slider {

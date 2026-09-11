@@ -45,6 +45,14 @@ Page {
         property bool sceneryRefresh: false
         property bool sceneryInFlight: false
         property bool realWeather: false
+        property bool pauseInBackground: true
+        // AI scenario: file name in FGData/AI without .xml, "" for none;
+        // the carrier in it, if any, is where the aircraft then starts
+        property string scenario: ""
+        property string scenarioLabel: ""
+        property string scenarioCarrier: ""
+        property real scenarioLat: 0
+        property real scenarioLon: 0
     }
 
     SilicaFlickable {
@@ -218,6 +226,24 @@ Page {
                     }
                 }
 
+                // Scenario: FlightGear's AI scenarios - a carrier to land on,
+                // tankers, a wingman.  With a carrier the aircraft starts on
+                // its deck and the airport above is ignored.
+                ValueButton {
+                    label: qsTr("Scenario")
+                    value: simCfg.scenarioLabel !== "" ? simCfg.scenarioLabel : qsTr("None")
+                    onClicked: {
+                        var p = pageStack.push(Qt.resolvedUrl("ScenarioPage.qml"), { rt: rt })
+                        p.picked.connect(function(id, label, carrier, lat, lon) {
+                            simCfg.scenario = id
+                            simCfg.scenarioLabel = label
+                            simCfg.scenarioCarrier = carrier
+                            simCfg.scenarioLat = lat
+                            simCfg.scenarioLon = lon
+                        })
+                    }
+                }
+
                 Label {
                     x: Theme.horizontalPageMargin
                     width: parent.width - 2 * Theme.horizontalPageMargin
@@ -296,6 +322,15 @@ Page {
                                                 ? ["--enable-terrasync",
                                                    "--prop:/sim/terrasync/http-server=https://terrasync.eti.pg.gda.pl/ws2"]
                                                 : ["--disable-terrasync"])
+                                        // AI models only for a scenario: every AI object is
+                                        // draw calls, and there is nothing to see without one.
+                                        // --carrier takes precedence over --airport in
+                                        // FlightGear (positioninit.cxx), so both can be passed.
+                                        .concat(simCfg.scenario !== ""
+                                                ? ["--enable-ai-models", "--ai-scenario=" + simCfg.scenario]
+                                                  .concat(simCfg.scenarioCarrier !== ""
+                                                          ? ["--carrier=" + simCfg.scenarioCarrier] : [])
+                                                : ["--disable-ai-models"])
                                         // Visibility is not a property but an option that
                                         // feeds an environment preset, so it can only be
                                         // passed as --visibility, and only when it is meant
@@ -304,14 +339,19 @@ Page {
                                                 ? ["--visibility="
                                                    + [0, 5000, 10000, 20000, 40000, 80000][simCfg.visibility]]
                                                 : []),
-                                        // zero when the stored coordinates
-                                        // belong to a different airport: then
-                                        // nothing is fetched, rather than the
-                                        // wrong region
-                                        simCfg.airportCoordsIcao === simCfg.airport
-                                            ? simCfg.airportLat : 0,
-                                        simCfg.airportCoordsIcao === simCfg.airport
-                                            ? simCfg.airportLon : 0,
+                                        // Where the flight actually begins: on a
+                                        // carrier that is the ship, not the airport
+                                        // (--carrier wins over --airport), so the
+                                        // scenery is fetched there.  Zero when the
+                                        // stored coordinates belong to a different
+                                        // airport: then nothing is fetched, rather
+                                        // than the wrong region.
+                                        simCfg.scenarioCarrier !== "" ? simCfg.scenarioLat
+                                            : (simCfg.airportCoordsIcao === simCfg.airport
+                                               ? simCfg.airportLat : 0),
+                                        simCfg.scenarioCarrier !== "" ? simCfg.scenarioLon
+                                            : (simCfg.airportCoordsIcao === simCfg.airport
+                                               ? simCfg.airportLon : 0),
                                         simCfg.sceneryRefresh)
                         }
                     }
@@ -327,7 +367,7 @@ Page {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: qsTr("Open cockpit")
                     enabled: rt !== null && rt.simRunning
-                    onClicked: pageStack.push(Qt.resolvedUrl("FlightPage.qml"))
+                    onClicked: pageStack.push(Qt.resolvedUrl("FlightPage.qml"), { rt: rt })
                 }
 
                 // Starting the simulator goes straight to the cockpit.  The
@@ -341,7 +381,7 @@ Page {
                         if (!rt) return
                         if (rt.simRunning && !cockpitOpened) {
                             cockpitOpened = true
-                            pageStack.push(Qt.resolvedUrl("FlightPage.qml"))
+                            pageStack.push(Qt.resolvedUrl("FlightPage.qml"), { rt: rt })
                         } else if (!rt.simRunning) {
                             cockpitOpened = false
                         }

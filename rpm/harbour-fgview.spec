@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.9.10
+Version:    0.10.0
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,24 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.10.0-1
+- Lessons: FlightGear's tutorials for the loaded aircraft (the c172p has
+  fourteen, from preflight to engine failure) can be started from the
+  flight page. The simulator shows their instructions in a PUI window,
+  which this backend has not got, so the app reads each instruction from
+  the property tree and shows it over the picture. The scenery where a
+  lesson plays is fetched first (the c172p's are at Hilo). Verified on the
+  device: "Start Up" stepped from the parking brake through the circuit
+  breakers to priming the engine.
+- Scenarios: FlightGear's AI scenarios (carriers, tankers, wingmen, ships)
+  can be picked on the start page; with a carrier the aircraft starts on
+  its deck. AI models are only switched on for a scenario - they cost
+  draw calls and there is nothing to see without one. Verified: the c172p
+  on the deck of the Nimitz off San Francisco.
+- Settings: "Pause when in the background" freezes the flight and the
+  clock while the app is minimised or the screen is off, and throttles the
+  simulator to two frames a second; on by default, switchable.
+
 * Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.10-1
 - Settings: "Update scenery in flight" turns on FlightGear's own TerraSync,
   pointed straight at a mirror (its server discovery is a DNS NAPTR lookup

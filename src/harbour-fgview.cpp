@@ -15,6 +15,12 @@
 #include <QTcpSocket>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QQueue>
+#include <QPair>
+#include <QRegularExpression>
+#include <QVariantList>
+#include <QVariantMap>
+#include <functional>
 #include <QAccelerometer>
 #include <cmath>
 #include <QGyroscope>
@@ -382,6 +388,13 @@ class ControlSender : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(qreal throttle READ throttle WRITE setThrottle NOTIFY changed)
+    /* FlightGear's tutorials (interactive lessons), read from the running
+       simulator; the current instruction while one runs */
+    Q_PROPERTY(QVariantList tutorials READ tutorials NOTIFY tutorialsChanged)
+    Q_PROPERTY(bool tutorialRunning READ tutorialRunning NOTIFY tutorialChanged)
+    Q_PROPERTY(QString tutorialMessage READ tutorialMessage NOTIFY tutorialChanged)
+    Q_PROPERTY(QString tutorialName READ tutorialName NOTIFY tutorialChanged)
+    Q_PROPERTY(bool paused READ paused NOTIFY changed)
     Q_PROPERTY(qreal rudder   READ rudder   WRITE setRudder   NOTIFY changed)
     Q_PROPERTY(qreal flaps    READ flaps    WRITE setFlaps    NOTIFY changed)
     Q_PROPERTY(qreal brake    READ brake    WRITE setBrake    NOTIFY changed)
@@ -395,6 +408,9 @@ class ControlSender : public QObject
 public:
     explicit ControlSender(QObject* parent = nullptr) : QObject(parent)
     {
+        /* the current instruction of a running lesson, every 1.5 s */
+        _tutorialPoll.setInterval(1500);
+        connect(&_tutorialPoll, &QTimer::timeout, this, &ControlSender::pollTutorial);
         /* coalesced view updates from a drag, see setViewOffsets() */
         _viewTimer.setSingleShot(true);
         connect(&_viewTimer, &QTimer::timeout, this, &ControlSender::flushViewOffsets);
@@ -415,6 +431,11 @@ public:
     bool  tiltActive() const { return _tiltActive; }
     bool  cranking() const { return _cranking; }
     bool  engineOn() const { return _engineOn; }
+    QVariantList tutorials() const { return _tutorials; }
+    bool  tutorialRunning() const { return _tutorialRunning; }
+    QString tutorialMessage() const { return _tutorialMessage; }
+    QString tutorialName() const { return _tutorialName; }
+    bool  paused() const { return _paused; }
 
     void setThrottle(qreal v) { _throttle = clamp01(v); emit changed(); }
     void setRudder(qreal v)   { _rudder = clamp11(v);   emit changed(); }
@@ -536,6 +557,101 @@ public slots:
         _cranking = false;
         _engineOn = false;
         emit changed();
+    }
+
+    /* Freeze the simulation - used when the application goes to the
+       background (settings switch).  /sim/freeze/master stops the flight
+       model and the clock; the frame rate is throttled hard as well, since
+       FlightGear keeps drawing while frozen and that is what costs the
+       battery.  On resume the throttle goes back to what the settings
+       chose (0 = uncapped). */
+    void setPaused(bool paused, int resumeThrottleHz)
+    {
+        if (paused == _paused) return;
+        _paused = paused;
+        sendTelnet(QStringList()
+                   << QString("set /sim/freeze/master %1").arg(paused ? "true" : "false")
+                   << QString("set /sim/freeze/clock %1").arg(paused ? "true" : "false")
+                   << QString("set /sim/frame-rate-throttle-hz %1")
+                      .arg(paused ? 2 : resumeThrottleHz));
+        emit changed();
+    }
+
+    /* ---- tutorials --------------------------------------------------
+       FlightGear's tutorials are step-by-step lessons defined by the
+       aircraft (the c172p has fourteen); Nasal/tutorial/tutorial.nas drives
+       them and shows each instruction in a PUI window - which the GLES
+       build does not have.  It also stores the instruction in
+       /sim/tutorials/last-message, so the application reads it from there
+       and shows it itself. */
+    void refreshTutorials()
+    {
+        _tutorials.clear();
+        telnetQuery("ls /sim/tutorials", [this](const QString& out){
+            /* tutorial/, tutorial[1]/, ... one directory per lesson */
+            QStringList dirs;
+            for (const QString& line : out.split('\n')) {
+                const QString l = line.trimmed();
+                if (l.startsWith("tutorial") && l.endsWith('/'))
+                    dirs << l.left(l.size() - 1);
+            }
+            for (const QString& d : dirs) {
+                const QString path = "/sim/tutorials/" + d;
+                telnetQuery("ls " + path, [this, path, d](const QString& out){
+                    QVariantMap e;
+                    e["name"] = propValue(out, "name");
+                    e["description"] = propValue(out, "description").simplified();
+                    e["index"] = d;
+                    e["lat"] = 0.0; e["lon"] = 0.0;
+                    if (e["name"].toString().isEmpty()) return;
+                    /* where the lesson repositions the aircraft to, so the
+                       scenery there can be fetched first */
+                    telnetQuery("ls " + path + "/presets", [this, e](const QString& out) mutable {
+                        e["lat"] = propValue(out, "latitude-deg").toDouble();
+                        e["lon"] = propValue(out, "longitude-deg").toDouble();
+                        e["airport"] = propValue(out, "airport-id");
+                        _tutorials.append(e);
+                        emit tutorialsChanged();
+                    });
+                });
+            }
+        });
+    }
+
+    void startTutorial(const QString& name)
+    {
+        _tutorialName = name;
+        _tutorialMessage = tr("Starting lesson…");
+        _tutorialRunning = true;
+        emit tutorialChanged();
+        /* The tutorial module is off by default (defaults.xml,
+           /nasal/tutorial/enabled); FlightGear loads it when that flag is
+           set, which is what its own tutorial dialog does.  io.load_nasal
+           as a fallback should the listener not have fired yet. */
+        sendNasal(QString("setprop(\"/nasal/tutorial/enabled\", 1);\n"
+                          "if (!contains(globals, \"tutorial\")) {\n"
+                          "    io.load_nasal(getprop(\"/sim/fg-root\") ~ \"/Nasal/tutorial/tutorial.nas\", \"tutorial\");\n"
+                          /* The module keeps its property handles in a
+                             listener on /nasal/<module>/loaded, which the
+                             Nasal subsystem sets after loading a module the
+                             usual way.  Loading it by hand has to set it,
+                             or every handle stays nil and the first call
+                             dies with "non-objects have no members". */
+                          "    setprop(\"/nasal/tutorial/loaded\", 1);\n"
+                          "}\n"
+                          "setprop(\"/sim/tutorials/current-tutorial\", \"%1\");\n"
+                          "tutorial.startTutorial();\n").arg(name).toUtf8());
+        _tutorialPoll.start();
+    }
+
+    void stopTutorial()
+    {
+        sendNasal("if (contains(globals, \"tutorial\")) tutorial.stopTutorial();\n");
+        _tutorialPoll.stop();
+        _tutorialRunning = false;
+        _tutorialMessage.clear();
+        _tutorialName.clear();
+        emit tutorialChanged();
     }
 
     /* Next view (cockpit, chase, tower, ...): FlightGear's own view-cycle
@@ -718,6 +834,94 @@ private:
         telnetWrite(b);
     }
 
+    /* A second connection for questions.  One command in flight at a
+       time: its reply ends with FlightGear's prompt "/> ", which is what
+       tells the answer apart from the next one.  Kept apart from the
+       command connection so its replies do not have to be counted
+       against fire-and-forget commands and Nasal blocks. */
+    void telnetQuery(const QString& cmd, std::function<void(const QString&)> cb)
+    {
+        _queries.enqueue(qMakePair(cmd, cb));
+        pumpQueries();
+    }
+
+    void pumpQueries()
+    {
+        if (_queryBusy || _queries.isEmpty()) return;
+        if (!_tnq) {
+            _tnq = new QTcpSocket(this);
+            connect(_tnq, &QTcpSocket::readyRead, this, &ControlSender::onQueryData);
+            connect(_tnq, &QTcpSocket::connected, this, [this]{ _queryBusy = false; pumpQueries(); });
+            auto gone = [this]{
+                if (_tnq) { _tnq->deleteLater(); _tnq = nullptr; }
+                _queryBusy = false;
+                _queryRx.clear();
+                /* the question in flight gets no answer; drop it so the
+                   queue does not stall forever */
+                if (!_queries.isEmpty() && _queryInFlight) _queries.dequeue();
+                _queryInFlight = false;
+            };
+            connect(_tnq, &QTcpSocket::disconnected, this, gone);
+            connect(_tnq, static_cast<void (QTcpSocket::*)(QAbstractSocket::SocketError)>(&QTcpSocket::error),
+                    this, [gone](QAbstractSocket::SocketError){ gone(); });
+            _tnq->connectToHost(QHostAddress::LocalHost, 5401);
+            _queryBusy = true;          // until connected
+            return;
+        }
+        if (_tnq->state() != QAbstractSocket::ConnectedState) return;
+        _queryBusy = true;
+        _queryInFlight = true;
+        _queryRx.clear();
+        _tnq->write((_queries.head().first + "\r\n").toUtf8());
+    }
+
+    void onQueryData()
+    {
+        _queryRx += _tnq->readAll();
+        const int p = _queryRx.indexOf("/> ");
+        if (p < 0) return;
+        const QString reply = QString::fromUtf8(_queryRx.left(p));
+        _queryRx = _queryRx.mid(p + 3);
+        if (!_queries.isEmpty()) {
+            auto q = _queries.dequeue();
+            _queryInFlight = false;
+            _queryBusy = false;
+            q.second(reply);
+        } else {
+            _queryBusy = false;
+        }
+        pumpQueries();
+    }
+
+    /* "name = 'value' (type)" out of an ls reply */
+    static QString propValue(const QString& lsOut, const QString& name)
+    {
+        const QRegularExpression re("(?:^|\\n)" + QRegularExpression::escape(name)
+                                    + "\\s*=\\s*'(.*?)'\\s*\\(", QRegularExpression::DotMatchesEverythingOption);
+        const auto m = re.match(lsOut);
+        return m.hasMatch() ? m.captured(1) : QString();
+    }
+
+    void pollTutorial()
+    {
+        telnetQuery("ls /sim/tutorials", [this](const QString& out){
+            const QString msg = propValue(out, "last-message");
+            const QString running = propValue(out, "running");
+            bool changedNow = false;
+            if (!msg.isEmpty() && msg != _tutorialMessage) { _tutorialMessage = msg; changedNow = true; }
+            /* tutorial.nas writes 1 and 0, not true and false; an empty
+               string means the property is not there yet, which is not the
+               same as "ended" */
+            if ((running == "0" || running == "false") && _tutorialRunning) {
+                /* the lesson ended by itself (last step done) */
+                _tutorialRunning = false;
+                _tutorialPoll.stop();
+                changedNow = true;
+            }
+            if (changedNow) emit tutorialChanged();
+        });
+    }
+
     void telnetWrite(const QByteArray& b)
     {
         if (!_telnet) {
@@ -750,6 +954,8 @@ private:
 
 signals:
     void changed();
+    void tutorialsChanged();
+    void tutorialChanged();
 
 private:
     QUdpSocket _sock;
@@ -764,6 +970,15 @@ private:
     bool  _engineOn = false;
     QTcpSocket* _telnet = nullptr;
     QByteArray  _telnetQueue;
+    QTcpSocket* _tnq = nullptr;
+    QByteArray  _queryRx;
+    QQueue<QPair<QString, std::function<void(const QString&)>>> _queries;
+    bool _queryBusy = false, _queryInFlight = false;
+    QVariantList _tutorials;
+    bool    _tutorialRunning = false;
+    QString _tutorialMessage, _tutorialName;
+    QTimer  _tutorialPoll;
+    bool    _paused = false;
     QElapsedTimer _viewSent;
     QTimer _viewTimer;
     /* Last view offsets sent, so a drag only puts a command on the wire

@@ -1,6 +1,7 @@
 import QtQuick 2.6
 import Sailfish.Silica 1.0
 import harbour.fgview 1.0
+import Nemo.Configuration 1.0
 
 Page {
     id: page
@@ -16,6 +17,36 @@ Page {
     showNavigationIndicator: false
 
     ControlSender { id: ctl }
+    property var rt                        // FgRuntime, for a lesson's scenery
+
+    // the settings the flight page acts on itself
+    ConfigurationGroup {
+        id: cfg
+        path: "/apps/harbour-fgview/sim"
+        property bool pauseInBackground: true
+        property int  frameLimit: 0
+    }
+
+    // Minimised, or the screen off: freeze the simulation, so it neither
+    // flies on unattended nor burns the battery drawing for nobody.
+    //
+    // A bound property rather than Connections on Qt.application: the
+    // change signal of one's own property is certain to exist, and a
+    // Connections handler whose signal name is wrong fails silently.
+    property bool appActive: Qt.application.active
+    onAppActiveChanged: {
+        if (!cfg.pauseInBackground) return
+        ctl.setPaused(!appActive, [0, 20, 30, 60][cfg.frameLimit])
+    }
+
+    // Switched off while paused: let it run again.
+    Connections {
+        target: cfg
+        onPauseInBackgroundChanged: {
+            if (!cfg.pauseInBackground && ctl.paused)
+                ctl.setPaused(false, [0, 20, 30, 60][cfg.frameLimit])
+        }
+    }
 
     // Take the tilt reference once the page is up and the phone is in the
     // hand, not at the first sensor reading, which may still be the table.
@@ -272,6 +303,42 @@ Page {
 
     // ---- Switches, right --------------------------------------------
 
+    // The current instruction of a running lesson: FlightGear shows it in
+    // a PUI window, which this backend does not have, so it is read from
+    // the property tree and shown here.
+    Rectangle {
+        id: lessonBox
+        visible: ctl.tutorialRunning
+        anchors { left: parent.left; right: buttonColumn.left; top: parent.top; margins: Theme.paddingMedium }
+        height: lessonText.height + 2 * Theme.paddingMedium
+        color: Theme.rgba(Theme.highlightDimmerColor, 0.8)
+        radius: Theme.paddingSmall
+        Label {
+            id: lessonText
+            anchors { left: parent.left; right: stopLesson.left; top: parent.top; margins: Theme.paddingMedium }
+            wrapMode: Text.WordWrap
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.primaryColor
+            text: ctl.tutorialMessage
+        }
+        FlatButton {
+            id: stopLesson
+            anchors { right: parent.right; verticalCenter: parent.verticalCenter; rightMargin: Theme.paddingSmall }
+            width: Theme.itemSizeMedium
+            text: "✕"
+            onClicked: ctl.stopTutorial()
+        }
+    }
+
+    // paused in the background: say so when the picture comes back
+    Label {
+        visible: ctl.paused
+        anchors.centerIn: parent
+        text: qsTr("Paused")
+        color: Theme.highlightColor
+        font.pixelSize: Theme.fontSizeHuge
+    }
+
     Column {
         id: buttonColumn
         width: Theme.itemSizeExtraLarge
@@ -311,6 +378,13 @@ Page {
             width: parent.width
             text: qsTr("View")
             onClicked: ctl.cycleView()
+        }
+
+        FlatButton {
+            width: parent.width
+            text: ctl.tutorialRunning ? qsTr("Lesson…") : qsTr("Lessons")
+            color: ctl.tutorialRunning ? Theme.highlightColor : Theme.primaryColor
+            onClicked: pageStack.push(Qt.resolvedUrl("LessonsPage.qml"), { ctl: ctl, rt: page.rt })
         }
 
         FlatButton {

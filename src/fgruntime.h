@@ -39,11 +39,14 @@ class FgRuntime : public QObject
     Q_PROPERTY(bool    dataReady   READ dataReady   NOTIFY stateChanged)
     Q_PROPERTY(bool    busy        READ busy        NOTIFY stateChanged)
     Q_PROPERTY(bool    simRunning  READ simRunning  NOTIFY stateChanged)
+    Q_PROPERTY(bool    sceneryBusy READ sceneryBusy NOTIFY stateChanged)
     Q_PROPERTY(int     progress    READ progress    NOTIFY progressChanged)
     Q_PROPERTY(QString status      READ status      NOTIFY progressChanged)
     Q_PROPERTY(QString speed       READ speed       NOTIFY progressChanged)
     Q_PROPERTY(QString simLog      READ simLog      NOTIFY simLogChanged)
     Q_PROPERTY(QVariantList aircraft     READ aircraft     NOTIFY aircraftChanged)
+    /* FlightGear's AI scenarios (carriers, tankers, wingmen, ...) */
+    Q_PROPERTY(QVariantList scenarios    READ scenarios    NOTIFY aircraftChanged)
     Q_PROPERTY(QVariantList catalog      READ catalog      NOTIFY catalogChanged)
     Q_PROPERTY(bool         catalogBusy  READ catalogBusy  NOTIFY catalogChanged)
     Q_PROPERTY(QString      hangarStatus READ hangarStatus NOTIFY catalogChanged)
@@ -94,6 +97,7 @@ public:
                 this, &FgRuntime::onSceneryFinished);
 
         refreshAircraft();
+        refreshScenarios();
 
         _extractTick.setInterval(2000);
         connect(&_extractTick, &QTimer::timeout,
@@ -142,8 +146,9 @@ public:
     bool simRunning() const
     {
         return _sim.state() != QProcess::NotRunning
-            || _scenery.state() != QProcess::NotRunning;
+            || (_scenery.state() != QProcess::NotRunning && _sceneryThen == SceneryThenLaunch);
     }
+    bool sceneryBusy() const { return _scenery.state() != QProcess::NotRunning; }
     int progress() const { return _progress; }
     QString status() const { return _status; }
     QString speed() const { return _speed; }
@@ -379,6 +384,66 @@ public slots:
         emit catalogChanged();
     }
 
+    QVariantList scenarios() const { return _scenarios; }
+
+    /* The scenario files in FGData/AI: name and description of the
+       scenario, the carrier in it if there is one (the aircraft can start
+       on its deck with --carrier), and where its first object is - most
+       demos sit off San Francisco, and it helps to say so. */
+    void refreshScenarios()
+    {
+        _scenarios.clear();
+        QDir dir(fgRoot() + "/AI");
+        for (const QFileInfo& fi : dir.entryInfoList(QStringList() << "*.xml", QDir::Files, QDir::Name)) {
+            QFile f(fi.absoluteFilePath());
+            if (!f.open(QIODevice::ReadOnly)) continue;
+            const QString x = QString::fromUtf8(f.readAll());
+            if (!x.contains("<scenario")) continue;
+            const QRegularExpression::PatternOption dot = QRegularExpression::DotMatchesEverythingOption;
+            QVariantMap e;
+            e["id"] = fi.completeBaseName();
+            /* the scenario's own name and description come before the first entry */
+            const QString head = x.section("<entry", 0, 0);
+            auto m = QRegularExpression("<name>(.*?)</name>", dot).match(head);
+            e["name"] = m.hasMatch() ? m.captured(1).trimmed() : fi.completeBaseName();
+            m = QRegularExpression("<description>(.*?)</description>", dot).match(head);
+            e["description"] = m.hasMatch() ? m.captured(1).simplified() : QString();
+            QString carrier;
+            double lat = 0.0, lon = 0.0;
+            QRegularExpression entryRe("<entry>(.*?)</entry>", dot);
+            auto it = entryRe.globalMatch(x);
+            while (it.hasNext()) {
+                const QString entry = it.next().captured(1);
+                auto t = QRegularExpression("<type>(.*?)</type>", dot).match(entry);
+                auto n = QRegularExpression("<name>(.*?)</name>", dot).match(entry);
+                auto la = QRegularExpression("<latitude>(.*?)</latitude>", dot).match(entry);
+                auto lo = QRegularExpression("<longitude>(.*?)</longitude>", dot).match(entry);
+                if (carrier.isEmpty() && t.hasMatch() && t.captured(1).trimmed() == "carrier" && n.hasMatch())
+                    carrier = n.captured(1).trimmed();
+                if (lat == 0.0 && lon == 0.0 && la.hasMatch() && lo.hasMatch()) {
+                    lat = la.captured(1).trimmed().toDouble();
+                    lon = lo.captured(1).trimmed().toDouble();
+                }
+            }
+            e["carrier"] = carrier;
+            e["lat"] = lat;
+            e["lon"] = lon;
+            _scenarios.append(e);
+        }
+        emit aircraftChanged();
+    }
+
+    /* Scenery for somewhere else than the departure airport - a lesson
+       repositions the aircraft (the c172p's are at Hilo, Hawaii).  Same
+       check-then-fetch as before a start; sceneryReady() when done, fetched
+       or not, so the caller can go on. */
+    void fetchSceneryFor(double lat, double lon)
+    {
+        if (_scenery.state() != QProcess::NotRunning) return;
+        _sceneryThen = SceneryThenSignal;
+        beginScenery(lat, lon, false);
+    }
+
     void startSim(const QString& aircraft = "c172p",
                   const QString& airport  = "LOWW",
                   const QString& backend  = "gles3",
@@ -512,7 +577,8 @@ public slots:
                    << "--fg-aircraft=" + aircraftDir()
                    /* --enable/--disable-terrasync comes from the settings
                       page in extraProps (in-flight scenery updates) */
-                   << "--disable-ai-models"
+                   /* --enable/--disable-ai-models comes from the start page
+                      in extraProps: on for a scenario, off otherwise */
                    /* real weather on or off comes from the settings page,
                       as --enable/--disable-real-weather-fetch in extraProps */
                    /* Sound off unless asked for: it costs frame time, and
@@ -569,12 +635,25 @@ public slots:
        A fresh device showed nothing but water: the scenery on the
        development phone had been fetched by hand, and the application
        never fetched any. */
+    /* what to do once the scenery is settled */
+    void sceneryDone()
+    {
+        if (_sceneryThen == SceneryThenSignal) {
+            _sceneryThen = SceneryThenLaunch;
+            _sceneryPhase = SceneryIdle;
+            emit stateChanged();
+            emit sceneryReady();
+        } else {
+            launchSim();
+        }
+    }
+
     void beginScenery(double lat, double lon, bool refresh)
     {
         /* No coordinates (an airport picked with a version whose lists had
            none): start as before rather than fetch the wrong region. */
-        if (lat == 0.0 && lon == 0.0) { launchSim(); return; }
-        if (!QFileInfo::exists(SCENERY_TOOL)) { launchSim(); return; }
+        if (lat == 0.0 && lon == 0.0) { sceneryDone(); return; }
+        if (!QFileInfo::exists(SCENERY_TOOL)) { sceneryDone(); return; }
 
         _sceneryLat = lat;
         _sceneryLon = lon;
@@ -634,6 +713,7 @@ public slots:
            unattached. */
         if (_scenery.state() != QProcess::NotRunning) {
             _sceneryPhase = SceneryIdle;
+            _sceneryThen = SceneryThenLaunch;
             _scenery.terminate();
             if (!_scenery.waitForFinished(3000)) _scenery.kill();
             _status = tr("Stopped");
@@ -861,14 +941,14 @@ private slots:
             if (code == 0 && !crashed) {
                 _status = tr("Scenery for the airport is present");
                 emit progressChanged();
-                launchSim();
+                sceneryDone();
             } else if (code == 2 && !crashed) {
                 /* Tiles on disk from before the record existed: fly now
                    rather than hold the start for a comparison with the
                    servers; the settings switch does that on demand. */
                 _status = tr("Scenery for the airport is on the device");
                 emit progressChanged();
-                launchSim();
+                sceneryDone();
             } else {
                 startSceneryFetch();
             }
@@ -881,7 +961,7 @@ private slots:
                     ? tr("Scenery fetched")
                     : tr("The scenery could not be fetched (no network?) — starting with what is there");
             emit progressChanged();
-            launchSim();
+            sceneryDone();
         }
     }
 
@@ -989,6 +1069,7 @@ signals:
 
     void stateChanged();
     void progressChanged();
+    void sceneryReady();
     void simLogChanged();
 
 private:
@@ -998,6 +1079,9 @@ private:
 
     static constexpr const char* SCENERY_TOOL = "/opt/fgfs/bin/fgfs-scenery";
     enum SceneryPhase { SceneryIdle, SceneryCheck, SceneryFetch };
+    enum SceneryThen { SceneryThenLaunch, SceneryThenSignal };
+    SceneryThen _sceneryThen = SceneryThenLaunch;
+    QVariantList _scenarios;
 
     QProcess _dl, _tar, _sim, _resolve, _scenery;
     SceneryPhase _sceneryPhase = SceneryIdle;
