@@ -395,6 +395,9 @@ class ControlSender : public QObject
 public:
     explicit ControlSender(QObject* parent = nullptr) : QObject(parent)
     {
+        /* coalesced view updates from a drag, see setViewOffsets() */
+        _viewTimer.setSingleShot(true);
+        connect(&_viewTimer, &QTimer::timeout, this, &ControlSender::flushViewOffsets);
         _accel.setDataRate(50);
         _accel.start();
 
@@ -430,44 +433,83 @@ public:
     void setTiltActive(bool v){ _tiltActive = v;        emit changed(); }
 
 public slots:
-    /* Vollstaendige Startsequenz ueber FlightGears Telnet-Kanal.
-       Das generic-Protokoll kann nur die Achsen setzen; Tankwahl,
-       Batterie und Primer brauchen Property-Zugriff. */
+    /* The whole start-up, for whatever is loaded, as one Nasal script over
+       FlightGear's telnet channel (the generic protocol only sets the
+       axes; switches, fuel and starters need property access, and the
+       number of engines is only known inside the simulator).
+
+       Every engine gets the piston items (magnetos, mixture, primer) and
+       the turbine items (cutoff off, starter on); each engine model reads
+       what it knows and ignores the rest.  The starters then stay engaged
+       until that engine reports running, up to ninety seconds: a JSBSim
+       turbine aborts the start the moment the starter drops, and the
+       eight fixed seconds of the old sequence, sized for the c172p, were
+       far too short for a spooling jet - which is why the A320's engines
+       never came up, and why only engine[0] was ever cranked.
+
+       Aircraft that bring their own start-up automation are handed to
+       it: the A320 family's acconfig "ready for taxi" state runs APU,
+       bleed air and both engines in the right order, which the FADEC
+       insists on. */
     void startEngine()
     {
         if (_cranking) return;
 
-        QStringList cmds;
-        /* Both the c172p switch properties, which its Nasal reads, and the
-           engine[0] properties, which the engine model reads.  The
-           current-engine alias is not enough: the model never sees it. */
-        cmds << "set /controls/fuel/tank[0]/fuel_selector true"
-             << "set /controls/fuel/tank[1]/fuel_selector true"
-             << "set /controls/switches/master-bat true"
-             << "set /controls/electric/battery-switch true"
-             << "set /controls/switches/master-alt true"
-             << "set /controls/switches/master-avionics true"
-             << "set /controls/switches/magnetos 3"
-             << "set /controls/engines/engine[0]/magnetos 3"
-             << "set /controls/engines/engine[0]/mixture 1.0"
-             << "set /controls/engines/current-engine/mixture 1.0"
-             << "set /controls/engines/engine[0]/throttle 0.25"
-             << "set /controls/engines/current-engine/throttle 0.25"
-             << "set /controls/engines/engine[0]/primer 5"
-             << "set /controls/gear/brake-parking 0"
-             << "set /controls/switches/starter true"
-             << "set /controls/engines/engine[0]/starter true";
-        sendTelnet(cmds);
+        sendNasal(
+            "# engines the FDM actually has: FlightGear creates six engine\n"
+            "# nodes for every aircraft, each with an empty running node; only\n"
+            "# the real ones carry a value there\n"
+            "var n = 0;\n"
+            "for (var i = 0; i < 8; i += 1)\n"
+            "    if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\") != nil) n = i + 1;\n"
+            "if (n < 1) n = 1;\n"
+            "setprop(\"/controls/fuel/tank[0]/fuel_selector\", 1);\n"
+            "setprop(\"/controls/fuel/tank[1]/fuel_selector\", 1);\n"
+            "setprop(\"/controls/switches/master-bat\", 1);\n"
+            "setprop(\"/controls/electric/battery-switch\", 1);\n"
+            "setprop(\"/controls/switches/master-alt\", 1);\n"
+            "setprop(\"/controls/switches/master-avionics\", 1);\n"
+            "setprop(\"/controls/switches/magnetos\", 3);\n"
+            "setprop(\"/controls/gear/brake-parking\", 0);\n"
+            "for (var i = 0; i < n; i += 1) {\n"
+            "    var e = \"/controls/engines/engine[\" ~ i ~ \"]/\";\n"
+            "    setprop(e ~ \"magnetos\", 3);\n"
+            "    setprop(e ~ \"mixture\", 1.0);\n"
+            "    setprop(e ~ \"primer\", 5);\n"
+            "    setprop(e ~ \"throttle\", 0.25);\n"
+            "    setprop(e ~ \"cutoff\", 0);\n"
+            "    setprop(e ~ \"starter\", 1);\n"
+            "}\n"
+            "setprop(\"/controls/engines/current-engine/mixture\", 1.0);\n"
+            "setprop(\"/controls/engines/current-engine/throttle\", 0.25);\n"
+            "setprop(\"/controls/switches/starter\", 1);\n"
+            "var fgtouch_started = systime();\n"
+            "var fgtouch_check = func {\n"
+            "    var pending = 0;\n"
+            "    for (var i = 0; i < n; i += 1) {\n"
+            "        if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\"))\n"
+            "            setprop(\"/controls/engines/engine[\" ~ i ~ \"]/starter\", 0);\n"
+            "        else\n"
+            "            pending += 1;\n"
+            "    }\n"
+            "    if (pending > 0 and systime() - fgtouch_started < 90) {\n"
+            "        settimer(fgtouch_check, 2);\n"
+            "    } else {\n"
+            "        for (var i = 0; i < n; i += 1)\n"
+            "            setprop(\"/controls/engines/engine[\" ~ i ~ \"]/starter\", 0);\n"
+            "        setprop(\"/controls/switches/starter\", 0);\n"
+            "    }\n"
+            "};\n"
+            "settimer(fgtouch_check, 6);\n"
+            "if (contains(globals, \"acconfig\") and contains(acconfig, \"taxi\")) acconfig.taxi();\n");
 
         _cranking = true;
         _throttle = 0.25;
         emit changed();
 
-        /* Eight seconds: at a few frames per second six were not enough. */
-        QTimer::singleShot(8000, this, [this]{
-            sendTelnet(QStringList()
-                       << "set /controls/switches/starter false"
-                       << "set /controls/engines/engine[0]/starter false");
+        /* The button reads "cranking" for ten seconds; the starters
+           themselves are released by the script above, per engine. */
+        QTimer::singleShot(10000, this, [this]{
             _cranking = false;
             _engineOn = true;
             emit changed();
@@ -476,13 +518,21 @@ public slots:
 
     void stopEngine()
     {
-        sendTelnet(QStringList()
-                   << "set /controls/engines/engine[0]/mixture 0.0"
-                   << "set /controls/engines/current-engine/mixture 0.0"
-                   << "set /controls/switches/magnetos 0"
-                   << "set /controls/engines/engine[0]/magnetos 0"
-                   << "set /controls/switches/starter false"
-                   << "set /controls/engines/engine[0]/starter false");
+        sendNasal(
+            "var n = 0;\n"
+            "for (var i = 0; i < 8; i += 1)\n"
+            "    if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\") != nil) n = i + 1;\n"
+            "if (n < 1) n = 1;\n"
+            "for (var i = 0; i < n; i += 1) {\n"
+            "    var e = \"/controls/engines/engine[\" ~ i ~ \"]/\";\n"
+            "    setprop(e ~ \"starter\", 0);\n"
+            "    setprop(e ~ \"mixture\", 0.0);\n"
+            "    setprop(e ~ \"magnetos\", 0);\n"
+            "    setprop(e ~ \"cutoff\", 1);\n"
+            "}\n"
+            "setprop(\"/controls/engines/current-engine/mixture\", 0.0);\n"
+            "setprop(\"/controls/switches/magnetos\", 0);\n"
+            "setprop(\"/controls/switches/starter\", 0);\n");
         _cranking = false;
         _engineOn = false;
         emit changed();
@@ -493,6 +543,33 @@ public slots:
     void cycleView()
     {
         sendTelnet(QStringList() << "run view-cycle");
+    }
+
+    /* Where the view points, relative to the nose: the look-to-the-side
+       buttons and the drag gesture both end up here.
+
+       goal- rather than plain heading-offset/pitch-offset: FlightGear
+       interpolates towards the goal, so the view swings round instead of
+       snapping, and a quick tap does not jerk the picture.
+
+       Positive heading is to the left - the offset is measured
+       counterclockwise from the nose.  Positive pitch is up.
+
+       Works in any view, cockpit or outside: it is the current view that
+       carries the offsets. */
+    void setViewOffsets(int headingDeg, int pitchDeg)
+    {
+        /* Only send what changed, and at most every 50 ms: a drag produces
+           a touch update per frame, and each one is a telnet command the
+           simulator has to parse between frames. */
+        if (headingDeg == _viewHeading && pitchDeg == _viewPitch) return;
+        _viewHeading = headingDeg;
+        _viewPitch = pitchDeg;
+        if (!_viewSent.isValid() || _viewSent.elapsed() >= 50) {
+            flushViewOffsets();
+        } else if (!_viewTimer.isActive()) {
+            _viewTimer.start(50 - int(_viewSent.elapsed()));
+        }
     }
 
     /* Field of view in degrees, from the pinch gesture. */
@@ -519,17 +596,22 @@ private slots:
     {
         updateFromSensors();
 
-        char buf[160];
-        /* The throttle twice: engine[0] is what the engine model reads,
-           current-engine is what the cockpit lever's animation reads. */
+        char buf[256];
+        /* One throttle field per engine, eight of them, then the lever:
+           the engine models read engine[N], the cockpit lever's animation
+           reads current-engine.  The field order is the protocol written
+           in FgRuntime::start. */
         /* Not qsnprintf: under a German locale it wrote 0,2500 and the
            comma separated protocol read twice as many fields - the throttle
            got 9943, the lever field 2500.  QByteArray::number is always the
            C locale. */
+        const QByteArray throttle = QByteArray::number(_throttle, 'f', 4);
+        QByteArray throttles = throttle;
+        for (int i = 1; i < 8; ++i) throttles += ',' + throttle;
         const QByteArray line = QByteArray::number(_aileron, 'f', 4) + ','
             + QByteArray::number(_elevator, 'f', 4) + ','
             + QByteArray::number(_rudder, 'f', 4) + ','
-            + QByteArray::number(_throttle, 'f', 4) + ','
+            + throttles + ','
             + QByteArray::number(_brake, 'f', 4) + ','
             + QByteArray::number(_flaps, 'f', 4) + ','
             + QByteArray::number(_gearDown ? 1 : 0) + ','
@@ -595,22 +677,72 @@ private:
         return v < 0 ? -e : e;
     }
 
-    /* Kurzlebige Verbindung pro Befehlssatz - der Telnet-Kanal von
-       FlightGear haelt keine Sitzung ueber laengere Zeit sauber. */
+    void flushViewOffsets()
+    {
+        _viewSent.start();
+        sendTelnet(QStringList()
+                   << QString("set /sim/current-view/goal-heading-offset-deg %1")
+                      .arg(_viewHeading)
+                   << QString("set /sim/current-view/goal-pitch-offset-deg %1")
+                      .arg(_viewPitch));
+    }
+
+    /* One connection for all telnet traffic, kept open.
+
+       It used to be a fresh connection per command set.  A fast drag
+       opened dozens of them within a second, and FlightGear serves its
+       telnet clients in whatever order they happen to be polled - so an
+       older view offset could land after a newer one, and the camera
+       jumped back and forth between two directions.  On a single
+       connection the commands arrive in the order they were written.
+
+       The replies (prompts, echoed values) are read and dropped, so the
+       receive buffer never fills up and stalls the simulator's writes -
+       that was the reason the old code did not keep a session. */
     void sendTelnet(const QStringList& cmds)
     {
-        QTcpSocket* sock = new QTcpSocket(this);
-        connect(sock, &QTcpSocket::connected, this, [sock, cmds]{
-            for (const QString& c : cmds)
-                sock->write((c + "\r\n").toUtf8());
-            sock->flush();
-            QTimer::singleShot(400, sock, [sock]{
-                sock->disconnectFromHost();
-                sock->deleteLater();
+        QByteArray b;
+        for (const QString& c : cmds) b += (c + "\r\n").toUtf8();
+        telnetWrite(b);
+    }
+
+    /* A Nasal script over the same channel: "nasal" switches the
+       connection into script mode until the ##EOF## line.  Needs
+       --allow-nasal-from-sockets on the simulator's command line, which
+       FgRuntime passes. */
+    void sendNasal(const QByteArray& script)
+    {
+        QByteArray b = "nasal\r\n" + script;
+        if (!script.endsWith('\n')) b += "\n";
+        b += "##EOF##\r\n";
+        telnetWrite(b);
+    }
+
+    void telnetWrite(const QByteArray& b)
+    {
+        if (!_telnet) {
+            _telnet = new QTcpSocket(this);
+            connect(_telnet, &QTcpSocket::readyRead, _telnet, [this]{ _telnet->readAll(); });
+            connect(_telnet, &QTcpSocket::connected, this, [this]{
+                if (!_telnetQueue.isEmpty()) { _telnet->write(_telnetQueue); _telnetQueue.clear(); }
             });
-        });
-        connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
-        sock->connectToHost(QHostAddress::LocalHost, 5401);
+            /* Gone (simulator stopped, refused while it is still
+               starting): drop the socket, the next command reconnects.
+               What was queued is kept for that attempt. */
+            auto gone = [this]{
+                if (_telnet) { _telnet->deleteLater(); _telnet = nullptr; }
+            };
+            connect(_telnet, &QTcpSocket::disconnected, this, gone);
+            connect(_telnet, static_cast<void (QTcpSocket::*)(QAbstractSocket::SocketError)>(&QTcpSocket::error),
+                    this, [gone](QAbstractSocket::SocketError){ gone(); });
+            _telnet->connectToHost(QHostAddress::LocalHost, 5401);
+        }
+        if (_telnet->state() == QAbstractSocket::ConnectedState) {
+            _telnet->write(b);
+        } else {
+            _telnetQueue += b;
+            if (_telnetQueue.size() > 65536) _telnetQueue = _telnetQueue.right(65536);
+        }
     }
 
     static qreal clamp01(qreal v) { return qBound(0.0, v, 1.0); }
@@ -630,6 +762,14 @@ private:
     bool  _tiltActive = true;   /* first reading calibrates the reference */
     bool  _cranking = false;
     bool  _engineOn = false;
+    QTcpSocket* _telnet = nullptr;
+    QByteArray  _telnetQueue;
+    QElapsedTimer _viewSent;
+    QTimer _viewTimer;
+    /* Last view offsets sent, so a drag only puts a command on the wire
+       when the rounded degree actually changes. */
+    int   _viewHeading = 0;
+    int   _viewPitch = 0;
 
     qreal _refX = 0, _refY = 0, _refZ = 0;
     bool  _haveRef = false;

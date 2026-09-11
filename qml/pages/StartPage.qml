@@ -5,6 +5,10 @@ import Nemo.Configuration 1.0
 
 Page {
     id: page
+
+    // So the jump into the cockpit happens once per simulator run and not
+    // again every time some other state changes.
+    property bool cockpitOpened: false
     allowedOrientations: Orientation.All
 
     property FgRuntime rt
@@ -15,10 +19,32 @@ Page {
         path: "/apps/harbour-fgview/sim"
         property real vegetation: 0.0
         property int  modelHz: 60
-        property bool traffic: false
+        property int  trafficLevel: 0
+        property bool buildings: false
+        property int  visibility: 0
+        property int  clouds: 2
+        property int  timeOfDay: 2
+        property bool autoCoord: false
+        property int  frameLimit: 0
         property int  detailRange: 1500
         property int  filtering: 1
         property bool particles: true
+        property bool sound: false
+        property string aircraft: "c172p"
+        property string aircraftLabel: "Cessna 172P"
+        property string airport: "LOWW"
+        property string airportLabel: "Wien Schwechat (LOWW)"
+        // Where the departure airport is, for the scenery fetch - and which
+        // airport the coordinates belong to.  An airport picked with 0.9.6
+        // or earlier is stored without any, and the group would hand out
+        // these defaults for it: the app would then fetch Vienna for
+        // Frankfurt and, worse, record it as done.
+        property real airportLat: 48.110
+        property real airportLon: 16.570
+        property string airportCoordsIcao: "LOWW"
+        property bool sceneryRefresh: false
+        property bool sceneryInFlight: false
+        property bool realWeather: false
     }
 
     SilicaFlickable {
@@ -118,16 +144,23 @@ Page {
                     text: qsTr("Base data installed")
                 }
 
-                ComboBox {
-                    id: aircraftBox
+                // Aircraft: whatever is installed, plus a way to the
+                // hangar.  The three fixed entries this replaces included
+                // "j3cub", which is neither in FGData nor in the catalogue -
+                // the Cub is called J3Cub - so choosing it started nothing.
+                ValueButton {
+                    id: aircraftButton
                     label: qsTr("Aircraft")
-                    currentIndex: 0
-                    menu: ContextMenu {
-                        MenuItem { text: "Cessna 172P" }
-                        MenuItem { text: "Piper J3 Cub" }
-                        MenuItem { text: "Cessna 172P (2D panel)" }
+                    value: simCfg.aircraftLabel !== "" ? simCfg.aircraftLabel
+                                                       : simCfg.aircraft
+                    onClicked: {
+                        var p = pageStack.push(Qt.resolvedUrl("AircraftPage.qml"),
+                                               { rt: rt })
+                        p.picked.connect(function(id, label) {
+                            simCfg.aircraft = id
+                            simCfg.aircraftLabel = label
+                        })
                     }
-                    property var ids: ["c172p", "j3cub", "c172p"]
                 }
 
                 ComboBox {
@@ -163,18 +196,26 @@ Page {
                     checked: false
                 }
 
-                ComboBox {
-                    id: airportBox
+                // Departure airport: country, then large or small, then
+                // the list.  A ComboBox held five hand-picked airports;
+                // there are 27000, so the choice is a page of its own now.
+                // The last pick is remembered, so the usual case is one tap
+                // on Start.
+                ValueButton {
+                    id: airportButton
                     label: qsTr("Departure airport")
-                    currentIndex: 0
-                    menu: ContextMenu {
-                        MenuItem { text: "Vienna (LOWW)" }
-                        MenuItem { text: "Wiener Neustadt East (LOAN)" }
-                        MenuItem { text: "Innsbruck (LOWI)" }
-                        MenuItem { text: "Salzburg (LOWS)" }
-                        MenuItem { text: "San Francisco (KSFO)" }
+                    value: simCfg.airportLabel !== "" ? simCfg.airportLabel
+                                                      : simCfg.airport
+                    onClicked: {
+                        var p = pageStack.push(Qt.resolvedUrl("AirportCountryPage.qml"))
+                        p.picked.connect(function(icao, label, lat, lon) {
+                            simCfg.airport = icao
+                            simCfg.airportLabel = label
+                            simCfg.airportLat = lat
+                            simCfg.airportLon = lon
+                            simCfg.airportCoordsIcao = icao
+                        })
                     }
-                    property var ids: ["LOWW", "LOAN", "LOWI", "LOWS", "KSFO"]
                 }
 
                 Label {
@@ -184,7 +225,7 @@ Page {
                     color: Theme.secondaryColor
                     font.pixelSize: Theme.fontSizeSmall
                     text: (rt && rt.simRunning) ? rt.status
-                          : qsTr("The first start takes a minute or two while scenery and flight model are loaded.")
+                          : qsTr("Before the start the scenery around the airport is checked and, if missing, fetched (a few hundred MB); loading then takes a minute or two.")
                 }
 
                 Button {
@@ -195,16 +236,83 @@ Page {
                         if (rt.simRunning) {
                             rt.stopSim()
                         } else {
-                            rt.startSim(aircraftBox.ids[aircraftBox.currentIndex],
-                                        airportBox.ids[airportBox.currentIndex],
+                            rt.startSim(simCfg.aircraft,
+                                        simCfg.airport,
                                         backendBox.ids[backendBox.currentIndex],
                                         airborneSwitch.checked,
-                                        [ "--prop:/sim/rendering/vegetation-density=" + simCfg.vegetation,
+                                        simCfg.sound,
+                                        [ // At zero, switch the vegetation off outright rather
+                                          // than only setting its density to nothing: with
+                                          // random-vegetation still true the tile loader keeps
+                                          // running the placement work, and the loading stalls
+                                          // that produces are far worse than the trees ever cost
+                                          // to draw.
+                                          "--prop:/sim/rendering/random-vegetation="
+                                            + (simCfg.vegetation > 0 ? "true" : "false"),
+                                          "--prop:/sim/rendering/vegetation-density=" + simCfg.vegetation,
                                           "--prop:/sim/model-hz=" + simCfg.modelHz,
-                                          "--prop:/sim/traffic-manager/enabled=" + (simCfg.traffic ? "true" : "false"),
+                                          // Level 0 really has to switch the manager off:
+                                          // a proportion of 0.0 still lets one schedule in
+                                          // eight through, because the test is "randval >
+                                          // proportion" and randval can be 0.
+                                          "--prop:/sim/traffic-manager/enabled="
+                                            + (simCfg.trafficLevel > 0 ? "true" : "false"),
+                                          // 0.10 / 0.35 / 0.50 / 0.80 / 1.0 land on 25, 37.5,
+                                          // 50, 75 and 100 percent.  FlightGear compares
+                                          // against "rand() & 100", a bitwise and, so only
+                                          // 0, 4, 32, 36, 64, 68, 96 and 100 ever come out of
+                                          // it - anything between those steps changes nothing.
+                                          "--prop:/sim/traffic-manager/proportion="
+                                            + [0.0, 0.0, 0.10, 0.50, 0.80, 1.0][simCfg.trafficLevel],
                                           "--prop:/sim/rendering/static-lod/detailed=" + simCfg.detailRange,
                                           "--prop:/sim/rendering/filtering=" + simCfg.filtering,
-                                          "--prop:/sim/rendering/particles=" + (simCfg.particles ? "true" : "false") ])
+                                          "--prop:/sim/rendering/particles=" + (simCfg.particles ? "true" : "false"),
+                                          "--prop:/sim/rendering/random-buildings="
+                                            + (simCfg.buildings ? "true" : "false"),
+                                          // Two separate things: the flat layers live in
+                                          // /environment/clouds/status, the volumetric ones in
+                                          // clouds3d-enable.  "Flat layers" therefore means
+                                          // status on and 3d off, not one setting turned down.
+                                          "--prop:/environment/clouds/status="
+                                            + (simCfg.clouds > 0 ? "true" : "false"),
+                                          "--prop:/sim/rendering/clouds3d-enable="
+                                            + (simCfg.clouds > 1 ? "true" : "false"),
+                                          "--prop:/controls/flight/auto-coordination="
+                                            + (simCfg.autoCoord ? "true" : "false"),
+                                          "--prop:/sim/frame-rate-throttle-hz="
+                                            + [0, 20, 30, 60][simCfg.frameLimit],
+                                          "--timeofday="
+                                            + ["dawn", "morning", "noon", "afternoon",
+                                               "dusk", "evening", "midnight"][simCfg.timeOfDay],
+                                          // METAR from the net, or FlightGear's own
+                                          // default weather; the option pair sets the
+                                          // same property, so exactly one is passed
+                                          simCfg.realWeather ? "--enable-real-weather-fetch"
+                                                             : "--disable-real-weather-fetch" ]
+                                        // In-flight scenery: FlightGear's TerraSync, pointed
+                                        // straight at a mirror - its own server discovery is
+                                        // a DNS NAPTR lookup that mobile resolvers refuse.
+                                        .concat(simCfg.sceneryInFlight
+                                                ? ["--enable-terrasync",
+                                                   "--prop:/sim/terrasync/http-server=https://terrasync.eti.pg.gda.pl/ws2"]
+                                                : ["--disable-terrasync"])
+                                        // Visibility is not a property but an option that
+                                        // feeds an environment preset, so it can only be
+                                        // passed as --visibility, and only when it is meant
+                                        // to override what the weather would have chosen.
+                                        .concat(simCfg.visibility > 0
+                                                ? ["--visibility="
+                                                   + [0, 5000, 10000, 20000, 40000, 80000][simCfg.visibility]]
+                                                : []),
+                                        // zero when the stored coordinates
+                                        // belong to a different airport: then
+                                        // nothing is fetched, rather than the
+                                        // wrong region
+                                        simCfg.airportCoordsIcao === simCfg.airport
+                                            ? simCfg.airportLat : 0,
+                                        simCfg.airportCoordsIcao === simCfg.airport
+                                            ? simCfg.airportLon : 0,
+                                        simCfg.sceneryRefresh)
                         }
                     }
                 }
@@ -220,6 +328,24 @@ Page {
                     text: qsTr("Open cockpit")
                     enabled: rt !== null && rt.simRunning
                     onClicked: pageStack.push(Qt.resolvedUrl("FlightPage.qml"))
+                }
+
+                // Starting the simulator goes straight to the cockpit.  The
+                // page shows "waiting for fgfs" until the first frame
+                // arrives, which is the same minute or two the start page
+                // would have shown, only already in the right place.  The
+                // button above stays for coming back after leaving.
+                Connections {
+                    target: rt
+                    onStateChanged: {
+                        if (!rt) return
+                        if (rt.simRunning && !cockpitOpened) {
+                            cockpitOpened = true
+                            pageStack.push(Qt.resolvedUrl("FlightPage.qml"))
+                        } else if (!rt.simRunning) {
+                            cockpitOpened = false
+                        }
+                    }
                 }
             }
         }

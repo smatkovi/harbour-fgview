@@ -30,6 +30,8 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QUrl>
+#include <QVariantMap>
+#include <algorithm>
 
 class FgRuntime : public QObject
 {
@@ -41,6 +43,11 @@ class FgRuntime : public QObject
     Q_PROPERTY(QString status      READ status      NOTIFY progressChanged)
     Q_PROPERTY(QString speed       READ speed       NOTIFY progressChanged)
     Q_PROPERTY(QString simLog      READ simLog      NOTIFY simLogChanged)
+    Q_PROPERTY(QVariantList aircraft     READ aircraft     NOTIFY aircraftChanged)
+    Q_PROPERTY(QVariantList catalog      READ catalog      NOTIFY catalogChanged)
+    Q_PROPERTY(bool         catalogBusy  READ catalogBusy  NOTIFY catalogChanged)
+    Q_PROPERTY(QString      hangarStatus READ hangarStatus NOTIFY catalogChanged)
+    Q_PROPERTY(int          hangarProgress READ hangarProgress NOTIFY catalogChanged)
 
 public:
     ~FgRuntime() override
@@ -78,6 +85,15 @@ public:
                 this, &FgRuntime::onDownloadOutput);
         connect(&_sim, &QProcess::readyReadStandardOutput,
                 this, &FgRuntime::onSimOutput);
+        connect(&_scenery, &QProcess::readyReadStandardOutput,
+                this, &FgRuntime::onSceneryOutput);
+        connect(&_scenery, &QProcess::readyReadStandardError,
+                this, &FgRuntime::onSceneryOutput);
+        connect(&_scenery,
+                static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished),
+                this, &FgRuntime::onSceneryFinished);
+
+        refreshAircraft();
 
         _extractTick.setInterval(2000);
         connect(&_extractTick, &QTimer::timeout,
@@ -93,6 +109,15 @@ public:
 
         connect(&_tar, static_cast<void(QProcess::*)(int,QProcess::ExitStatus)>(&QProcess::finished),
                 this, &FgRuntime::onExtractFinished);
+
+        connect(&_cat, static_cast<void(QProcess::*)(int,QProcess::ExitStatus)>(&QProcess::finished),
+                this, &FgRuntime::onCatalogFinished);
+        connect(&_acDl, &QProcess::readyReadStandardOutput,
+                this, &FgRuntime::onAircraftOutput);
+        connect(&_acDl, static_cast<void(QProcess::*)(int,QProcess::ExitStatus)>(&QProcess::finished),
+                this, &FgRuntime::onAircraftDownloaded);
+        connect(&_acUnzip, static_cast<void(QProcess::*)(int,QProcess::ExitStatus)>(&QProcess::finished),
+                this, &FgRuntime::onAircraftUnpacked);
 
         connect(&_sim, static_cast<void(QProcess::*)(int,QProcess::ExitStatus)>(&QProcess::finished),
                 this, [this](int, QProcess::ExitStatus){
@@ -111,13 +136,38 @@ public:
         return _dl.state() != QProcess::NotRunning
             || _tar.state() != QProcess::NotRunning;
     }
-    bool simRunning() const { return _sim.state() != QProcess::NotRunning; }
+    /* The scenery phase counts as running: the start button has to become
+       "stop" while the tiles are coming in, and a second start must not
+       slip past. */
+    bool simRunning() const
+    {
+        return _sim.state() != QProcess::NotRunning
+            || _scenery.state() != QProcess::NotRunning;
+    }
     int progress() const { return _progress; }
     QString status() const { return _status; }
     QString speed() const { return _speed; }
     QString simLog() const { return _simLog; }
 
     QString fgRoot() const { return _root + "/fgdata"; }
+
+    /* Aircraft downloaded from the hangar go next to FGData rather than into
+       it: FGData is replaced wholesale when the base data is re-fetched, and
+       anything put inside it would go with it. */
+    QString aircraftDir() const { return _root + "/aircraft"; }
+
+    QVariantList aircraft() const { return _aircraft; }
+    QVariantList catalog() const { return _catalog; }
+    bool catalogBusy() const
+    {
+        return _cat.state() != QProcess::NotRunning
+            || _acDl.state() != QProcess::NotRunning
+            || _acUnzip.state() != QProcess::NotRunning;
+    }
+    QString hangarStatus() const { return _hangarStatus; }
+    /* -1 while there is nothing to show a bar for (fetching the catalogue,
+       unpacking); 0..100 during a download. */
+    int hangarProgress() const { return _hangarProgress; }
 
 public slots:
     void downloadData()
@@ -217,29 +267,187 @@ public slots:
         emit stateChanged();
     }
 
+    /* ---- Aircraft ------------------------------------------------------
+       Two lists: what is installed, and what the hangar offers.  The
+       chooser used to hold three hardcoded entries, one of which ("j3cub")
+       matched neither an installed aircraft nor a catalogue id - the Cub is
+       called J3Cub - so picking it started nothing. */
+
+    void refreshAircraft()
+    {
+        _aircraft.clear();
+        /* Both trees: what came with FGData and what was downloaded since. */
+        for (const QString& base : { fgRoot() + "/Aircraft", aircraftDir() }) {
+            QDirIterator it(base, QStringList() << "*-set.xml",
+                            QDir::Files, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                const QString path = it.next();
+                const QString file = QFileInfo(path).fileName();
+                const QString id = file.left(file.length() - 8);   // -set.xml
+
+                /* The name shown to the user is the aircraft's own
+                   description.  Only the head of the file is read: a -set.xml
+                   can be hundreds of kilobytes and the description is in the
+                   first few. */
+                QString name;
+                QFile f(path);
+                if (f.open(QIODevice::ReadOnly)) {
+                    const QString head = QString::fromUtf8(f.read(16384));
+                    QRegularExpressionMatch m =
+                        QRegularExpression("<description>(.*?)</description>",
+                                           QRegularExpression::DotMatchesEverythingOption)
+                        .match(head);
+                    if (m.hasMatch()) name = m.captured(1).trimmed();
+                }
+                if (name.isEmpty()) name = id;
+
+                QVariantMap e;
+                e["id"] = id;
+                e["name"] = name;
+                e["dir"] = QFileInfo(path).absolutePath();
+                _aircraft.append(e);
+            }
+        }
+        std::sort(_aircraft.begin(), _aircraft.end(),
+                  [](const QVariant& a, const QVariant& b) {
+                      return a.toMap()["name"].toString().localeAwareCompare(
+                                 b.toMap()["name"].toString()) < 0;
+                  });
+        emit aircraftChanged();
+    }
+
+    /* The catalogue is 1.7 MB of XML listing 648 aircraft.  It is fetched
+       with curl rather than QNetworkAccessManager for the same reason the
+       base data is: Qt 5.6 here is built against an OpenSSL the system no
+       longer has, so its TLS does not work. */
+    void fetchCatalog()
+    {
+        if (catalogBusy()) return;
+        _hangarStatus = tr("Fetching the aircraft list…");
+        _hangarProgress = -1;
+        _cat.setProcessChannelMode(QProcess::MergedChannels);
+        _cat.start("curl", QStringList()
+                   << "-sSL" << "--max-time" << "180"
+                   << "-o" << _root + "/catalog.xml"
+                   << "http://mirrors.ibiblio.org/flightgear/ftp/Aircraft-2020/catalog.xml");
+        /* After start(), not before: catalogBusy() asks the processes what
+           they are doing, and before start() they are doing nothing - the
+           view would bind to "idle" and never hear otherwise until the
+           download had already finished. */
+        emit catalogChanged();
+    }
+
+    void installAircraft(const QString& id, const QString& dir, const QString& url)
+    {
+        if (catalogBusy()) return;
+        QDir().mkpath(aircraftDir());
+        _pendingId = id;
+        _pendingDir = dir;
+        _hangarStatus = tr("Downloading %1…").arg(id);
+        _hangarProgress = 0;
+        QFile::remove(_root + "/aircraft.zip");
+        /* aria2c rather than curl, for the progress: it prints a summary
+           line once a second that carries the percentage, and the aircraft
+           are large - the Cub alone is 66 MB. */
+        _acDl.setProcessChannelMode(QProcess::MergedChannels);
+        _acDl.start("aria2c", QStringList()
+                    << "-x" << "4" << "-s" << "4" << "-c"
+                    << "--summary-interval=1"
+                    << "--console-log-level=warn"
+                    << "--auto-file-renaming=false"
+                    << "--allow-overwrite=true"
+                    << "--check-certificate=false"
+                    << "-d" << _root << "-o" << "aircraft.zip" << url);
+        emit catalogChanged();      // after start(), see fetchCatalog()
+    }
+
+    void removeAircraft(const QString& dir)
+    {
+        /* Only under our own directory: FGData's own aircraft are not ours
+           to delete, and a path from elsewhere would be a bad thing to hand
+           to removeRecursively(). */
+        const QString base = QDir(aircraftDir()).absolutePath();
+        const QString target = QDir(dir).absolutePath();
+        if (!target.startsWith(base + "/")) {
+            _hangarStatus = tr("%1 came with the base data and stays").arg(dir);
+            emit catalogChanged();
+            return;
+        }
+        QDir(target).removeRecursively();
+        refreshAircraft();
+        _hangarStatus = tr("Removed");
+        emit catalogChanged();
+    }
+
     void startSim(const QString& aircraft = "c172p",
                   const QString& airport  = "LOWW",
                   const QString& backend  = "gles3",
                   bool startInAir = false,
-                  const QStringList& extraProps = QStringList())
+                  bool sound = false,
+                  const QStringList& extraProps = QStringList(),
+                  double airportLat = 0.0,
+                  double airportLon = 0.0,
+                  bool refreshScenery = false)
     {
         if (simRunning() || !dataReady()) return;
 
         _backend = backend;
 
         /* The control protocol lives in FGData, which is downloaded once and
-           then kept.  An older copy sent the throttle to
-           /controls/engines/current-engine/throttle, which the engine model
-           does not read, so the throttle did nothing.  Refresh it every time
-           rather than only when the archive is unpacked. */
+           then kept, so it is rewritten on every start.  It used to be
+           copied from /opt/fgfs/share, which tied the field order to the
+           runtime package; the sender is in this application, so the
+           definition is too.
+
+           One throttle field per engine, eight of them: a six-engined
+           An-225 with the lever wired to engine[0] alone taxied on one
+           engine, and the generic protocol cannot loop.  Fields for
+           engines an aircraft does not have only create unused
+           properties. */
         {
-            const QString dst = fgRoot() + "/Protocol/fgtouch.xml";
+            static const char* protocol =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                "<!-- fgtouch: the control channel from harbour-fgview to fgfs, UDP port\n"
+                "     5501, one comma separated line per update.  Written by the app;\n"
+                "     the field order matches ControlSender::sendPacket. -->\n"
+                "<PropertyList><generic><input>\n"
+                "<line_separator>newline</line_separator><var_separator>,</var_separator>\n"
+                "<chunk><name>aileron</name><node>/controls/flight/aileron</node><type>float</type></chunk>\n"
+                "<chunk><name>elevator</name><node>/controls/flight/elevator</node><type>float</type></chunk>\n"
+                "<chunk><name>rudder</name><node>/controls/flight/rudder</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle0</name><node>/controls/engines/engine[0]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle1</name><node>/controls/engines/engine[1]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle2</name><node>/controls/engines/engine[2]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle3</name><node>/controls/engines/engine[3]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle4</name><node>/controls/engines/engine[4]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle5</name><node>/controls/engines/engine[5]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle6</name><node>/controls/engines/engine[6]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>throttle7</name><node>/controls/engines/engine[7]/throttle</node><type>float</type></chunk>\n"
+                "<chunk><name>brake</name><node>/controls/gear/brake-parking</node><type>float</type></chunk>\n"
+                "<chunk><name>flaps</name><node>/controls/flight/flaps</node><type>float</type></chunk>\n"
+                "<chunk><name>gear</name><node>/controls/gear/gear-down</node><type>bool</type></chunk>\n"
+                "<!-- current-engine is what the cockpit lever's animation reads -->\n"
+                "<chunk><name>throttle-lever</name><node>/controls/engines/current-engine/throttle</node><type>float</type></chunk>\n"
+                "</input></generic></PropertyList>\n";
             QDir().mkpath(fgRoot() + "/Protocol");
-            QFile::remove(dst);
-            QFile::copy("/opt/fgfs/share/fgtouch.xml", dst);
+            QFile f(fgRoot() + "/Protocol/fgtouch.xml");
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write(protocol);
         }
 
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+
+        /* Sound.  OpenAL Soft on this device is built with exactly one
+           backend, pulse, and a PulseAudio client finds its socket under
+           XDG_RUNTIME_DIR.  We have to point that at /run/display for
+           Wayland, and there is no pulse directory there - so the simulator
+           could never have reached the sound server, whatever else was set.
+           Take the socket from our own environment before overwriting it,
+           rather than writing a user id into the source. */
+        const QString userRuntime = env.value("XDG_RUNTIME_DIR");
+        if (!userRuntime.isEmpty())
+            env.insert("PULSE_SERVER", "unix:" + userRuntime + "/pulse/native");
+
         env.insert("XDG_RUNTIME_DIR", "/run/display");
         env.insert("WAYLAND_DISPLAY", "wayland-0");
         env.insert("FGFS_SHM", "1");
@@ -249,9 +457,20 @@ public slots:
         if (backend == "gles2" || backend == "gles3") {
             /* Nativ auf hybris-EGL: kein Mesa, kein Zink. Dafuer
                ohne GUI, HUD, Canvas und Anflugbefeuerung. */
-            const QString root = (backend == "gles3")
-                               ? QStringLiteral("/opt/osg-gles3")
-                               : QStringLiteral("/opt/osg-gles");
+            /* The GLES trees moved out of /opt in
+               fgfs-sailfish-gles-2020.3.19-9: they are 793 MB and the root
+               filesystem has under 2 GB free, while /home has 180 GB.  The
+               old location is still accepted, so a system that has the new
+               application but not yet the new runtime still starts. */
+            const QString name = (backend == "gles3") ? "osg-gles3" : "osg-gles";
+            const QString bin  = (backend == "gles3") ? "fgfs-gles3" : "fgfs-gles";
+            auto tree = [](const QString& leaf) {
+                for (const QString& base : { QStringLiteral("/home/.system/fgfs"),
+                                             QStringLiteral("/opt") })
+                    if (QFileInfo::exists(base + "/" + leaf)) return base + "/" + leaf;
+                return QStringLiteral("/home/.system/fgfs/") + leaf;
+            };
+            const QString root = tree(name);
             env.insert("LD_LIBRARY_PATH", root + "/lib");
             env.insert("OSG_LIBRARY_PATH", root + "/lib/osgPlugins-3.6.5");
             /* Kein Zero-Copy: hybris-EGL kennt kein
@@ -259,9 +478,15 @@ public slots:
                dmabuf gar nicht als Renderziel benutzen und die App
                saehe einen leeren Puffer. Also Readback. */
             env.insert("FGFS_DMA_HEAP", "/dev/null");
-            binary = (backend == "gles3")
-                   ? QStringLiteral("/opt/fgfs-gles3/bin/fgfs")
-                   : QStringLiteral("/opt/fgfs-gles/bin/fgfs");
+            /* Vertex array objects.  Draw is bound by the number of draw
+               calls, not by fill rate - rendering a quarter of the pixels
+               leaves draw time unchanged - so carrying the per-drawable
+               attribute setup in a VAO instead of repeating it on every
+               call pays off.  Measured on LOWW with the c172p: frame
+               74.1 -> 66.6 ms, draw 39.3 -> 31.3.  VERTEX_BUFFER_OBJECT is
+               the weaker variant (draw 43.0). */
+            env.insert("OSG_VERTEX_BUFFER_HINT", "VERTEX_ARRAY_OBJECT");
+            binary = tree(bin) + "/bin/fgfs";
         } else {
             env.insert("LD_LIBRARY_PATH", "/opt/mesa-zink/lib64:/opt/fgfs/lib");
             env.insert("__EGL_VENDOR_LIBRARY_DIRS",
@@ -274,16 +499,25 @@ public slots:
             binary = QStringLiteral("/opt/fgfs/bin/fgfs");
         }
 
-        _sim.setProcessEnvironment(env);
-        _sim.setProcessChannelMode(QProcess::MergedChannels);
-        _simLog.clear();
-        emit simLogChanged();
-        _sim.start(binary, QStringList()
+        /* The simulator is started once the scenery is known to be there;
+           beginScenery() takes it from here.  It cannot be an argument to
+           the binary: this starts FlightGear itself, not the fgfs-run
+           wrapper, and FlightGear rejects options it does not know. */
+        _simBinary = binary;
+        _simEnv = env;
+        _simArgs = QStringList()
                    << "--fg-root=" + fgRoot()
-                   << "--disable-terrasync"
+                   /* Downloaded aircraft live outside FGData, so FlightGear
+                      has to be told where to look. */
+                   << "--fg-aircraft=" + aircraftDir()
+                   /* --enable/--disable-terrasync comes from the settings
+                      page in extraProps (in-flight scenery updates) */
                    << "--disable-ai-models"
-                   << "--disable-real-weather-fetch"
-                   << "--disable-sound"
+                   /* real weather on or off comes from the settings page,
+                      as --enable/--disable-real-weather-fetch in extraProps */
+                   /* Sound off unless asked for: it costs frame time, and
+                      the default configuration is the fast one. */
+                   << (sound ? QStringList{} : QStringList{ "--disable-sound" })
                    << "--prop:/sim/rendering/shadows/enabled=false"
                    /* PUI-Menueleiste aus: PLIBs glBitmap-Schriften
                       stuerzen unter Zink in tc_texture_map ab, und
@@ -293,9 +527,16 @@ public slots:
                    << "--prop:/sim/rendering/multi-sample-buffers=0"
                    << "--generic=socket,in,30,,5501,udp,fgtouch"
                    << "--telnet=5401"
+                   /* The engine start runs a Nasal snippet over that
+                      channel (one script for any number and kind of
+                      engines); FlightGear refuses Nasal from sockets
+                      without this. */
+                   << "--allow-nasal-from-sockets"
                    << "--aircraft=" + aircraft
                    << "--airport=" + airport
-                   << "--timeofday=noon"
+                   /* No --timeofday here any more: the settings page sends
+                      one, and the last occurrence wins, so a hardcoded noon
+                      would only be confusing to read. */
                    /* --disable-ai-models leaves the traffic manager on; it
                       filled the scene with fifty scheduled aircraft, each
                       with its own motion, model and draw calls. */
@@ -313,7 +554,72 @@ public slots:
                       Nasal scripts reset magnetos and battery behind us. */
                    << (startInAir ? QStringList{ "--altitude=3000", "--vc=90" }
                                   : QStringList{})
-                   << extraProps);
+                   << extraProps;
+
+        beginScenery(airportLat, airportLon, refreshScenery);
+    }
+
+    /* ---------------------------------------------------------------- scenery
+       Before the simulator starts, make sure the TerraSync tiles around the
+       departure airport are there.  fgfs-scenery answers --check offline
+       from the regions it has finished, so a start with the scenery in
+       place costs no network round trip and works with the radio off; only
+       when the answer is "missing" does it go to the mirrors.
+
+       A fresh device showed nothing but water: the scenery on the
+       development phone had been fetched by hand, and the application
+       never fetched any. */
+    void beginScenery(double lat, double lon, bool refresh)
+    {
+        /* No coordinates (an airport picked with a version whose lists had
+           none): start as before rather than fetch the wrong region. */
+        if (lat == 0.0 && lon == 0.0) { launchSim(); return; }
+        if (!QFileInfo::exists(SCENERY_TOOL)) { launchSim(); return; }
+
+        _sceneryLat = lat;
+        _sceneryLon = lon;
+        if (refresh) { startSceneryFetch(); return; }
+
+        _sceneryPhase = SceneryCheck;
+        _status = tr("Checking the scenery around the airport");
+        emit progressChanged();
+        emit stateChanged();
+        _scenery.start(SCENERY_TOOL, sceneryArgs() << "--check");
+    }
+
+    void startSceneryFetch()
+    {
+        _sceneryPhase = SceneryFetch;
+        _progress = 0;
+        _speed.clear();
+        _status = tr("Fetching the scenery around the airport — a few hundred MB on the first start");
+        emit progressChanged();
+        emit stateChanged();
+        _scenery.start(SCENERY_TOOL, sceneryArgs());
+    }
+
+    QStringList sceneryArgs() const
+    {
+        return QStringList()
+               << "--lat" << QString::number(_sceneryLat, 'f', 4)
+               << "--lon" << QString::number(_sceneryLon, 'f', 4)
+               << "--radius" << "1"
+               << "--target" << QDir::homePath() + "/.fgfs/TerraSync"
+               /* Only these two are organised by tile, so only these two
+                  can be fetched for a region.  Airports and Models are
+                  world-wide trees of thousands of index files; walking
+                  them held the start for twenty minutes. */
+               << "--subtrees" << "Terrain,Objects";
+    }
+
+    void launchSim()
+    {
+        _sceneryPhase = SceneryIdle;
+        _sim.setProcessEnvironment(_simEnv);
+        _sim.setProcessChannelMode(QProcess::MergedChannels);
+        _simLog.clear();
+        emit simLogChanged();
+        _sim.start(_simBinary, _simArgs);
 
         _status = tr("Simulator starting — this takes a minute or two");
         emit stateChanged();
@@ -322,6 +628,20 @@ public slots:
 
     void stopSim()
     {
+        /* The scenery fetch first, and before the flag that would start the
+           simulator when it ends.  fgfs-scenery passes the signal on to its
+           aria2c, so the download really stops instead of running on
+           unattached. */
+        if (_scenery.state() != QProcess::NotRunning) {
+            _sceneryPhase = SceneryIdle;
+            _scenery.terminate();
+            if (!_scenery.waitForFinished(3000)) _scenery.kill();
+            _status = tr("Stopped");
+            _progress = 0;
+            _speed.clear();
+            emit progressChanged();
+        }
+        _sceneryPhase = SceneryIdle;
         if (_sim.state() != QProcess::NotRunning) {
             _sim.terminate();
             if (!_sim.waitForFinished(3000)) _sim.kill();
@@ -334,6 +654,129 @@ public slots:
     }
 
 private slots:
+    /* The catalogue has arrived: turn 1.7 MB of XML into the handful of
+       fields the list needs.  Read with regular expressions rather than a
+       parser because the file is machine-generated and utterly regular. */
+    void onCatalogFinished(int, QProcess::ExitStatus)
+    {
+        _catalog.clear();
+        QFile f(_root + "/catalog.xml");
+        if (!f.open(QIODevice::ReadOnly)) {
+            _hangarStatus = tr("Could not fetch the aircraft list");
+            emit catalogChanged();
+            return;
+        }
+        const QString doc = QString::fromUtf8(f.readAll());
+
+        QRegularExpression pkgRe("<package>(.*?)</package>",
+                                 QRegularExpression::DotMatchesEverythingOption);
+        QRegularExpression idRe("<id>(.*?)</id>");
+        QRegularExpression nameRe("<name>(.*?)</name>");
+        QRegularExpression dirRe("<dir>(.*?)</dir>");
+        /* Not simply the first <url>: a package lists its variants first,
+           and each carries <preview><url>...jpg</url></preview> blocks.  The
+           download addresses come after <dir>, so the first URL in the block
+           is usually a screenshot - taking it fetched a JPEG and unzip then
+           refused it.  The zip is what is wanted, so ask for the zip. */
+        QRegularExpression urlRe("<url>([^<]*\\.zip)</url>");
+        QRegularExpression fdmRe("<FDM[^>]*>(\\d+)</FDM>");
+        QRegularExpression modelRe("<model[^>]*>(\\d+)</model>");
+
+        QRegularExpressionMatchIterator it = pkgRe.globalMatch(doc);
+        while (it.hasNext()) {
+            const QString p = it.next().captured(1);
+            QRegularExpressionMatch mi = idRe.match(p);
+            QRegularExpressionMatch mn = nameRe.match(p);
+            QRegularExpressionMatch mu = urlRe.match(p);
+            if (!mi.hasMatch() || !mn.hasMatch() || !mu.hasMatch()) continue;
+            QRegularExpressionMatch md = dirRe.match(p);
+            QRegularExpressionMatch mf = fdmRe.match(p);
+            QRegularExpressionMatch mm = modelRe.match(p);
+
+            QVariantMap e;
+            e["id"] = mi.captured(1);
+            e["name"] = mn.captured(1).trimmed();
+            e["dir"] = md.hasMatch() ? md.captured(1) : mi.captured(1);
+            e["url"] = mu.captured(1);
+            /* The catalogue rates flight model and 3D model from 0 to 5.
+               Shown so that a finished airliner is not buried among
+               abandoned sketches. */
+            e["fdm"] = mf.hasMatch() ? mf.captured(1).toInt() : 0;
+            e["model"] = mm.hasMatch() ? mm.captured(1).toInt() : 0;
+            _catalog.append(e);
+        }
+
+        _hangarStatus = _catalog.isEmpty()
+                        ? tr("The aircraft list came back empty")
+                        : tr("%1 aircraft available").arg(_catalog.size());
+        emit catalogChanged();
+    }
+
+    /* aria2 prints e.g.
+           [#1a2b3c 12MiB/65MiB(18%) CN:4 DL:2.1MiB ETA:25s]
+       once a second.  The percentage is all the bar needs; the speed is
+       worth showing because a 66 MB aircraft on a slow line is a long wait
+       and a still bar looks like a hang. */
+    void onAircraftOutput()
+    {
+        const QString chunk = QString::fromUtf8(_acDl.readAllStandardOutput());
+
+        /* The last match in the chunk, not the first: a chunk can hold
+           several of aria2's once-a-second lines, and the first of those is
+           the oldest - the bar would trail behind by however many lines
+           arrived together. */
+        QRegularExpressionMatch m, d;
+        QRegularExpressionMatchIterator mi =
+            QRegularExpression("\\((\\d+)%\\)").globalMatch(chunk);
+        while (mi.hasNext()) m = mi.next();
+        QRegularExpressionMatchIterator di =
+            QRegularExpression("DL:([0-9.]+[KMG]?i?B)").globalMatch(chunk);
+        while (di.hasNext()) d = di.next();
+
+        if (m.hasMatch()) _hangarProgress = m.captured(1).toInt();
+
+        /* The megabyte counter as well as the percentage: a fast download
+           produces only a handful of summary lines, and a bar that jumps
+           from 0 to gone looks like a failure. The byte figure at least
+           shows that something moved. */
+        QRegularExpressionMatch sz;
+        QRegularExpressionMatchIterator si =
+            QRegularExpression("([0-9.]+[KMG]?i?B/[0-9.]+[KMG]?i?B)").globalMatch(chunk);
+        while (si.hasNext()) sz = si.next();
+        QString detail = QString::number(_hangarProgress) + " %";
+        if (sz.hasMatch()) detail += ", " + sz.captured(1);
+        if (d.hasMatch())  detail += ", " + d.captured(1) + "/s";
+        _hangarStatus = tr("Downloading %1 — %2").arg(_pendingId).arg(detail);
+        emit catalogChanged();
+    }
+
+    void onAircraftDownloaded(int code, QProcess::ExitStatus)
+    {
+        const QString zip = _root + "/aircraft.zip";
+        if (code != 0 || QFileInfo(zip).size() < 1024) {
+            _hangarStatus = tr("Download of %1 failed").arg(_pendingId);
+            QFile::remove(zip);
+            emit catalogChanged();
+            return;
+        }
+        _hangarStatus = tr("Unpacking %1…").arg(_pendingId);
+        _hangarProgress = -1;
+        emit catalogChanged();
+        _acUnzip.setProcessChannelMode(QProcess::MergedChannels);
+        _acUnzip.start("unzip", QStringList()
+                       << "-o" << "-q" << zip << "-d" << aircraftDir());
+    }
+
+    void onAircraftUnpacked(int code, QProcess::ExitStatus)
+    {
+        QFile::remove(_root + "/aircraft.zip");
+        refreshAircraft();
+        _hangarProgress = -1;
+        _hangarStatus = (code == 0) ? tr("%1 installed").arg(_pendingId)
+                                    : tr("Unpacking %1 failed").arg(_pendingId);
+        emit catalogChanged();
+    }
+
     void onSimOutput()
     {
         const QString chunk = QString::fromUtf8(_sim.readAllStandardOutput());
@@ -373,6 +816,72 @@ private slots:
                 if (_status.isEmpty()) _status = l;
                 emit progressChanged();
             }
+        }
+    }
+
+    /* fgfs-scenery reports on stderr, aria2c's progress lines among them. */
+    void onSceneryOutput()
+    {
+        const QString out = QString::fromUtf8(_scenery.readAllStandardOutput())
+                          + QString::fromUtf8(_scenery.readAllStandardError());
+        _simLog += out;
+        if (_simLog.size() > 4000) _simLog = _simLog.right(4000);
+        emit simLogChanged();
+
+        /* [#4926fa 1.0GiB/1.6GiB(60%) CN:8 DL:2.4MiB ETA:4m35s] */
+        static const QRegularExpression rePct("\\((\\d+)%\\)");
+        static const QRegularExpression reDl("DL:([0-9.]+[KMG]i?B)");
+        static const QRegularExpression reEta("ETA:([0-9dhms]+)");
+        const auto m = rePct.match(out);
+        const auto d = reDl.match(out);
+        const auto e = reEta.match(out);
+        if (m.hasMatch()) _progress = m.captured(1).toInt();
+        if (d.hasMatch()) {
+            _speed = d.captured(1) + "/s";
+            if (e.hasMatch()) _speed += "  ETA " + e.captured(1);
+        }
+        /* Before aria2c starts there is a long walk over the indexes with
+           no percentage of its own; say what it is doing. */
+        if (out.contains("Durchsuche ") || out.contains("Indizes gelesen")) {
+            const QString line = out.section("Durchsuche ", -1).section('\n', 0, 0);
+            if (!line.isEmpty() && out.contains("Durchsuche "))
+                _status = tr("Looking through the scenery index: %1").arg(line.trimmed());
+        }
+        if (m.hasMatch() || d.hasMatch() || out.contains("Durchsuche "))
+            emit progressChanged();
+    }
+
+    void onSceneryFinished(int code, QProcess::ExitStatus status)
+    {
+        const bool crashed = status == QProcess::CrashExit;
+        if (_sceneryPhase == SceneryCheck) {
+            /* 0 = a finished fetch covers the airport.  Anything else,
+               including a crash or a fgfs-scenery too old to know --check,
+               means: fetch. */
+            if (code == 0 && !crashed) {
+                _status = tr("Scenery for the airport is present");
+                emit progressChanged();
+                launchSim();
+            } else if (code == 2 && !crashed) {
+                /* Tiles on disk from before the record existed: fly now
+                   rather than hold the start for a comparison with the
+                   servers; the settings switch does that on demand. */
+                _status = tr("Scenery for the airport is on the device");
+                emit progressChanged();
+                launchSim();
+            } else {
+                startSceneryFetch();
+            }
+            return;
+        }
+        if (_sceneryPhase == SceneryFetch) {
+            _progress = 0;
+            _speed.clear();
+            _status = (code == 0 && !crashed)
+                    ? tr("Scenery fetched")
+                    : tr("The scenery could not be fetched (no network?) — starting with what is there");
+            emit progressChanged();
+            launchSim();
         }
     }
 
@@ -475,6 +984,9 @@ private slots:
     }
 
 signals:
+    void aircraftChanged();
+    void catalogChanged();
+
     void stateChanged();
     void progressChanged();
     void simLogChanged();
@@ -484,7 +996,20 @@ private:
     static const qint64  ARCHIVE_BYTES   = 1789370768LL;
     static const quint64 EXTRACTED_BYTES = 2705459200ULL;
 
-    QProcess _dl, _tar, _sim, _resolve;
+    static constexpr const char* SCENERY_TOOL = "/opt/fgfs/bin/fgfs-scenery";
+    enum SceneryPhase { SceneryIdle, SceneryCheck, SceneryFetch };
+
+    QProcess _dl, _tar, _sim, _resolve, _scenery;
+    SceneryPhase _sceneryPhase = SceneryIdle;
+    double _sceneryLat = 0.0, _sceneryLon = 0.0;
+    QString _simBinary;
+    QStringList _simArgs;
+    QProcessEnvironment _simEnv;
+    QProcess _cat, _acDl, _acUnzip;
+    QVariantList _aircraft, _catalog;
+    QString _hangarStatus;
+    int _hangarProgress = -1;
+    QString _pendingId, _pendingDir;
     QString  _backend;
     QTimer _heartbeat;
     QTimer _extractTick;

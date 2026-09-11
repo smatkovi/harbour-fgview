@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.8.4
+Version:    0.9.10
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -10,7 +10,7 @@ Source100:  harbour-fgview.yaml
 Requires:   sailfishsilica-qt5 >= 0.10.9
 Requires:   qt5-qtdeclarative-import-sensors
 Requires:   nemo-qml-plugin-configuration-qt5
-Requires:   fgfs-sailfish >= 2020.3.19
+Requires:   fgfs-sailfish >= 2020.3.19-9
 Requires:   curl
 Requires:   aria2
 
@@ -52,6 +52,160 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.10-1
+- Settings: "Update scenery in flight" turns on FlightGear's own TerraSync,
+  pointed straight at a mirror (its server discovery is a DNS NAPTR lookup
+  that mobile resolvers refuse): tiles around the aircraft are fetched and
+  loaded as it flies, so leaving the pre-fetched area no longer ends over
+  water. Off by default - it needs a connection in flight and fetches the
+  shared models and airport data once.
+
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.9-1
+- A start with the scenery already on the device no longer waits for a
+  comparison with the servers: tiles on disk without a finished-run record
+  start the simulator at once (fgfs-scenery --check exit 2). The fetch
+  covers Terrain and Objects, the tile-organised trees; the world-wide
+  Airports and Models trees are left out - walking them held the start
+  for twenty minutes with nothing on screen.
+- Settings: "Real weather" fetches the current METAR at start and keeps it
+  updated in flight (--enable-real-weather-fetch); off by default, as it
+  needs a connection while flying.
+
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.8-1
+- Scenery is checked before every start, offline: fgfs-run (fgfs-sailfish
+  2020.3.19-8) asks fgfs-scenery whether a finished download covers the
+  departure airport and only fetches when it does not. The status line
+  says "present", "fetching" with aria2's progress, "fetched", or that the
+  fetch failed and the start goes on with what is there. A settings switch
+  "Refresh scenery on every start" forces the comparison with the servers.
+- The simulator's stderr is read as well: the scenery progress lines come
+  from there.
+
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.7-1
+- Scenery is fetched before a start: the airport lists now carry
+  coordinates, and the simulator is started with --region around the
+  departure airport, so fgfs-run pulls the TerraSync tiles one degree each
+  way (about half a gigabyte, only what is missing on later starts) and
+  the status line shows the download. A fresh device showed nothing but
+  water - the development phone's scenery had been fetched by hand.
+- The camera no longer jumps between two directions on a fast drag: all
+  telnet traffic goes over one connection kept open, so commands arrive in
+  order (a connection per command set let FlightGear serve an older view
+  offset after a newer one), and drag updates are coalesced to one every
+  50 ms.
+
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.6-1
+- Engine start for any aircraft: one Nasal script over the telnet channel
+  cranks every engine the simulator has, with the piston items (magnetos,
+  mixture, primer) and the turbine items (cutoff off, starter on), and
+  holds each starter until that engine reports running, up to ninety
+  seconds. Before, only engine[0] was cranked and the starter dropped after
+  eight fixed seconds - a JSBSim turbine aborts its start the moment that
+  happens, so the A320's engines never came up and a multi-engined
+  aircraft ran on one engine. Aircraft with their own start-up automation
+  (the A320 family's acconfig) are handed to it; the simulator is started
+  with --allow-nasal-from-sockets for this.
+- One throttle field per engine, eight of them: a six-engined An-225 with
+  the lever wired to engine[0] alone taxied on one engine.
+- The control protocol is written by the application itself instead of
+  being copied from the runtime package, so sender and field order cannot
+  drift apart.
+
+* Wed Sep 10 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.5-1
+- The look-to-the-side buttons are arrows without a caption and sit in the
+  control column at the edge instead of over the middle of the picture,
+  where they took up viewport and caught drags meant for the camera.
+
+* Wed Sep 10 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.4-1
+- The hangar says what happened after a download, and keeps saying it for a
+  few seconds. A 22 MB aircraft on a good line is done in five seconds, so
+  the bar was seen once at nought and the window then vanished - which reads
+  as a failure even though the aircraft had been installed. The message can
+  be tapped away.
+- The download line carries the megabyte count as well as the percentage, so
+  that a download too fast to fill the bar still visibly moves.
+
+* Wed Sep 10 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.3-1
+- A download from the hangar now says so. It did not before: the busy state
+  is read from the download process, and the change was announced before the
+  process was started, so the view bound to "idle" and heard nothing further
+  until the download had already finished.
+- The hangar shows the percentage and the rate rather than only a spinner:
+  aircraft run to tens of megabytes - the Cub is 66 MB - and a spinner with
+  no number looks the same as a hang. Downloaded with aria2c for the
+  progress it reports; the bar appears only while there is a real
+  percentage, not while the catalogue is being fetched or the zip unpacked.
+- The aircraft page repeats the message, because a download started in the
+  hangar keeps running after leaving that page.
+
+* Wed Sep 10 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.2-1
+- Aircraft are chosen from what is actually installed, found by scanning for
+  -set.xml under FGData and under the download directory, and named by their
+  own description. The three fixed entries this replaces included "j3cub",
+  which is neither in FGData nor in the catalogue - the Cub is called J3Cub -
+  so choosing it started nothing at all. FGData itself carries only the
+  c172p, with five variants, plus the ufo and mibs.
+- A hangar page offers the 648 aircraft of the official FlightGear 2020
+  catalogue, with a search field and the catalogue's own ratings for flight
+  model and 3D model. Tapping one downloads its zip and unpacks it beside
+  FGData - not inside, because FGData is replaced wholesale whenever the
+  base data is fetched again - and FlightGear is pointed at it with
+  --fg-aircraft. Installed aircraft can be removed again, but only those
+  under that directory: the ones that came with the base data are not ours
+  to delete.
+- The catalogue is fetched with curl rather than Qt networking, for the same
+  reason the base data is: Qt 5.6 here is built against an OpenSSL the
+  system no longer has.
+
+* Wed Sep 10 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.1-1
+- Finds the GLES runtime under /home/.system/fgfs, where
+  fgfs-sailfish-gles-9 puts it, and still accepts /opt so that a phone with
+  the new application but the old runtime still starts
+
+* Wed Sep 10 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.9.0-1
+- Departure airport is picked by country, then large or small, then from the
+  list. All 27486 airports of FGData's apt.dat are in there, sorted by
+  runway length, with a search field on both lists; the previous chooser
+  held five. Large means a hard runway of 1800 m or more. The lists are
+  generated once at build time rather than parsed at start: apt.dat is 27 MB
+  compressed. Airports whose identifier carries no ICAO prefix - the 6461
+  American ones such as 07MT or 3C8 - are placed by their position instead,
+  which left 526 of 27486 unfiled
+- Starting the simulator goes straight to the cockpit
+- One finger on the picture turns the view, in the cockpit or outside; two
+  still change the field of view. Both gestures now share one touch area,
+  because a separate one on top took the first touch point and the pinch was
+  then never recognised
+- Two buttons for looking left and right while held, letting go returns the
+  view to where the drag had left it
+- Every control can be used at once: the buttons, the throttle and the
+  rudder were MouseAreas, which only ever see the first touch point, so the
+  cockpit took exactly one input at a time
+- Sound, off by default, switchable. It could never have worked before:
+  OpenAL on this device is built with the PulseAudio backend only, and a
+  PulseAudio client finds its socket through XDG_RUNTIME_DIR, which has to
+  point at /run/display for Wayland - where there is no socket. PULSE_SERVER
+  is now derived from the application's own environment. Measured at 2.7 ms
+  per frame
+- Vertex array objects for the GLES backends. Draw time is bound by the
+  number of draw calls, not by fill rate - a quarter of the pixels leaves it
+  unchanged - so carrying the per-drawable attribute setup in a VAO pays.
+  Measured 74.1 -> 66.6 ms per frame at Vienna
+- Settings page grouped into scenery, weather and time, traffic, flying and
+  system, with buildings, visibility, clouds, time of day, auto-coordination
+  and a frame rate cap added. Every default is what the simulator already
+  did, so the page changes nothing until something is touched. A pulley menu
+  resets them
+- AI traffic is adjustable rather than only on or off. FlightGear compares
+  the share against "rand() & 100", a bitwise and, so the random value can
+  only ever be one of eight numbers; the percentages offered are the ones
+  actually reachable. Off has to switch the manager off outright, because a
+  share of zero still lets one schedule in eight through
+- Trees off means random-vegetation off, not a density of zero: with the
+  vegetation still enabled the tile loader keeps doing the placement work,
+  and the loading stalls that produces cost far more than the trees do
+- English throughout the flight page
+
 * Sun Sep 06 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.8.4-1
 - Button captions wrap instead of being cut off; Silica's Button keeps its
   label on one line, which the narrow column could not fit
