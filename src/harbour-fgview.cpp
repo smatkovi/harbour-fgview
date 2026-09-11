@@ -395,6 +395,8 @@ class ControlSender : public QObject
     Q_PROPERTY(QString tutorialMessage READ tutorialMessage NOTIFY tutorialChanged)
     Q_PROPERTY(QString tutorialName READ tutorialName NOTIFY tutorialChanged)
     Q_PROPERTY(bool paused READ paused NOTIFY changed)
+    Q_PROPERTY(bool reversing READ reversing NOTIFY changed)
+    Q_PROPERTY(qreal reverseDepth READ reverseDepth NOTIFY changed)
     Q_PROPERTY(qreal rudder   READ rudder   WRITE setRudder   NOTIFY changed)
     Q_PROPERTY(qreal flaps    READ flaps    WRITE setFlaps    NOTIFY changed)
     Q_PROPERTY(qreal brake    READ brake    WRITE setBrake    NOTIFY changed)
@@ -436,6 +438,8 @@ public:
     QString tutorialMessage() const { return _tutorialMessage; }
     QString tutorialName() const { return _tutorialName; }
     bool  paused() const { return _paused; }
+    bool  reversing() const { return _reversing; }
+    qreal reverseDepth() const { return _reverseDepth; }
 
     void setThrottle(qreal v) { _throttle = clamp01(v); emit changed(); }
     void setRudder(qreal v)   { _rudder = clamp11(v);   emit changed(); }
@@ -476,7 +480,30 @@ public slots:
     {
         if (_cranking) return;
 
-        sendNasal(
+        sendNasal(QByteArray(
+            "# The aircraft's own start-up procedure comes first: the c172p's\n"
+            "# autostart resets battery and breakers and sets the lights, the\n"
+            "# ec135's startup releases the rotor brake, arms both FADECs and\n"
+            "# walks the power levers - none of which a generic script knows.\n"
+            "# Searched in the aircraft's own Nasal namespaces, not FGData's.\n"
+            "var core = {tutorial:1, local_weather:1, jetways:1, jetways_edit:1, FailureMgr:1,\n"
+            "            canvas:1, console:1, debug:1, input_helpers:1, performance_monitor:1,\n"
+            "            std:1, towing:1, Autopush:1, modules:1};\n"
+            "var fgtouch_own = func(names) {\n"
+            "    var nasalN = props.globals.getNode(\"/nasal\");\n"
+            "    if (nasalN == nil) return \"\";\n"
+            "    foreach (var c; nasalN.getChildren()) {\n"
+            "        var ns = c.getName();\n"
+            "        if (contains(core, ns) or !contains(globals, ns) or typeof(globals[ns]) != \"hash\") continue;\n"
+            "        foreach (var fn; names)\n"
+            "            if (contains(globals[ns], fn) and typeof(globals[ns][fn]) == \"func\") {\n"
+            "                var err = [];\n"
+            "                call(globals[ns][fn], [], nil, nil, err);\n"
+            "                if (size(err) == 0) return ns ~ \".\" ~ fn;\n"
+            "            }\n"
+            "    }\n"
+            "    return \"\";\n"
+            "};\n"
             "# engines the FDM actually has: FlightGear creates six engine\n"
             "# nodes for every aircraft, each with an empty running node; only\n"
             "# the real ones carry a value there\n"
@@ -484,45 +511,61 @@ public slots:
             "for (var i = 0; i < 8; i += 1)\n"
             "    if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\") != nil) n = i + 1;\n"
             "if (n < 1) n = 1;\n"
-            "setprop(\"/controls/fuel/tank[0]/fuel_selector\", 1);\n"
-            "setprop(\"/controls/fuel/tank[1]/fuel_selector\", 1);\n"
-            "setprop(\"/controls/switches/master-bat\", 1);\n"
-            "setprop(\"/controls/electric/battery-switch\", 1);\n"
-            "setprop(\"/controls/switches/master-alt\", 1);\n"
-            "setprop(\"/controls/switches/master-avionics\", 1);\n"
-            "setprop(\"/controls/switches/magnetos\", 3);\n"
-            "setprop(\"/controls/gear/brake-parking\", 0);\n"
-            "for (var i = 0; i < n; i += 1) {\n"
-            "    var e = \"/controls/engines/engine[\" ~ i ~ \"]/\";\n"
-            "    setprop(e ~ \"magnetos\", 3);\n"
-            "    setprop(e ~ \"mixture\", 1.0);\n"
-            "    setprop(e ~ \"primer\", 5);\n"
-            "    setprop(e ~ \"throttle\", 0.25);\n"
-            "    setprop(e ~ \"cutoff\", 0);\n"
-            "    setprop(e ~ \"starter\", 1);\n"
-            "}\n"
-            "setprop(\"/controls/engines/current-engine/mixture\", 1.0);\n"
-            "setprop(\"/controls/engines/current-engine/throttle\", 0.25);\n"
-            "setprop(\"/controls/switches/starter\", 1);\n"
-            "var fgtouch_started = systime();\n"
-            "var fgtouch_check = func {\n"
-            "    var pending = 0;\n"
+            "var fgtouch_generic = func {\n"
+            "    setprop(\"/controls/fuel/tank[0]/fuel_selector\", 1);\n"
+            "    setprop(\"/controls/fuel/tank[1]/fuel_selector\", 1);\n"
+            "    setprop(\"/controls/switches/master-bat\", 1);\n"
+            "    setprop(\"/controls/electric/battery-switch\", 1);\n"
+            "    setprop(\"/controls/switches/master-alt\", 1);\n"
+            "    setprop(\"/controls/switches/master-avionics\", 1);\n"
+            "    setprop(\"/controls/switches/magnetos\", 3);\n"
             "    for (var i = 0; i < n; i += 1) {\n"
-            "        if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\"))\n"
-            "            setprop(\"/controls/engines/engine[\" ~ i ~ \"]/starter\", 0);\n"
-            "        else\n"
-            "            pending += 1;\n"
+            "        var e = \"/controls/engines/engine[\" ~ i ~ \"]/\";\n"
+            "        setprop(e ~ \"magnetos\", 3);\n"
+            "        setprop(e ~ \"mixture\", 1.0);\n"
+            "        setprop(e ~ \"primer\", 5);\n"
+            "        setprop(e ~ \"throttle\", 0.25);\n"
+            "        setprop(e ~ \"cutoff\", 0);\n"
+            "        setprop(e ~ \"starter\", 1);\n"
             "    }\n"
-            "    if (pending > 0 and systime() - fgtouch_started < 90) {\n"
-            "        settimer(fgtouch_check, 2);\n"
-            "    } else {\n"
-            "        for (var i = 0; i < n; i += 1)\n"
-            "            setprop(\"/controls/engines/engine[\" ~ i ~ \"]/starter\", 0);\n"
-            "        setprop(\"/controls/switches/starter\", 0);\n"
-            "    }\n"
+            "    setprop(\"/controls/engines/current-engine/mixture\", 1.0);\n"
+            "    setprop(\"/controls/engines/current-engine/throttle\", 0.25);\n"
+            "    setprop(\"/controls/switches/starter\", 1);\n"
+            "    # starters held until each engine runs, up to 90 s: a JSBSim\n"
+            "    # turbine aborts its start the moment the starter drops\n"
+            "    var fgtouch_started = systime();\n"
+            "    var fgtouch_check = func {\n"
+            "        var pending = 0;\n"
+            "        for (var i = 0; i < n; i += 1) {\n"
+            "            if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\"))\n"
+            "                setprop(\"/controls/engines/engine[\" ~ i ~ \"]/starter\", 0);\n"
+            "            else\n"
+            "                pending += 1;\n"
+            "        }\n"
+            "        if (pending > 0 and systime() - fgtouch_started < 90) {\n"
+            "            settimer(fgtouch_check, 2);\n"
+            "        } else {\n"
+            "            for (var i = 0; i < n; i += 1)\n"
+            "                setprop(\"/controls/engines/engine[\" ~ i ~ \"]/starter\", 0);\n"
+            "            setprop(\"/controls/switches/starter\", 0);\n"
+            "        }\n"
+            "    };\n"
+            "    settimer(fgtouch_check, 6);\n"
             "};\n"
-            "settimer(fgtouch_check, 6);\n"
-            "if (contains(globals, \"acconfig\") and contains(acconfig, \"taxi\")) acconfig.taxi();\n");
+            "# helicopters: a rotor brake left on keeps the rotor at a standstill\n"
+            "# whatever the engines do\n"
+            "setprop(\"/controls/rotor/brake\", 0);\n"
+            "setprop(\"/controls/gear/brake-parking\", 0);\n"
+            "if (contains(globals, \"acconfig\") and contains(acconfig, \"taxi\")) {\n"
+            "    # A320 family: its configuration state 'ready for taxi' runs APU,\n"
+            "    # bleed air and both engines in the order the FADEC wants\n"
+            "    fgtouch_generic();\n"
+            "    acconfig.taxi();\n"
+            "} else {\n"
+            "    var own = fgtouch_own([\"autostart\", \"startup\"]);\n"
+            "    if (own == \"\") fgtouch_generic();\n"
+            "    setprop(\"/sim/fgtouch/start-procedure\", own == \"\" ? \"generic\" : own);\n"
+            "}\n"));
 
         _cranking = true;
         _throttle = 0.25;
@@ -539,7 +582,23 @@ public slots:
 
     void stopEngine()
     {
-        sendNasal(
+        sendNasal(QByteArray(
+            "var core = {tutorial:1, local_weather:1, jetways:1, jetways_edit:1, FailureMgr:1,\n"
+            "            canvas:1, console:1, debug:1, input_helpers:1, performance_monitor:1,\n"
+            "            std:1, towing:1, Autopush:1, modules:1};\n"
+            "var done = 0;\n"
+            "var nasalN = props.globals.getNode(\"/nasal\");\n"
+            "if (nasalN != nil)\n"
+            "    foreach (var c; nasalN.getChildren()) {\n"
+            "        var ns = c.getName();\n"
+            "        if (done or contains(core, ns) or !contains(globals, ns) or typeof(globals[ns]) != \"hash\") continue;\n"
+            "        foreach (var fn; [\"autoshutdown\", \"shutdown\"])\n"
+            "            if (!done and contains(globals[ns], fn) and typeof(globals[ns][fn]) == \"func\") {\n"
+            "                var err = [];\n"
+            "                call(globals[ns][fn], [], nil, nil, err);\n"
+            "                done = size(err) == 0;\n"
+            "            }\n"
+            "    }\n"
             "var n = 0;\n"
             "for (var i = 0; i < 8; i += 1)\n"
             "    if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\") != nil) n = i + 1;\n"
@@ -553,10 +612,141 @@ public slots:
             "}\n"
             "setprop(\"/controls/engines/current-engine/mixture\", 0.0);\n"
             "setprop(\"/controls/switches/magnetos\", 0);\n"
-            "setprop(\"/controls/switches/starter\", 0);\n");
+            "setprop(\"/controls/switches/starter\", 0);\n"));
         _cranking = false;
         _engineOn = false;
         emit changed();
+    }
+
+    /* Reverse thrust, from the throttle held below zero.  Switched on
+       entering that zone and off leaving it or letting go, both at idle.
+
+       Most aircraft get the standard per-engine reverser property that
+       JSBSim and YASim read, and the depth of the zone is the throttle.
+
+       The A320 family has its own reverser logic, used through its toggle:
+       it deploys only with both levers at idle AND its FADEC reporting
+       IDLE, which happens a moment after the lever is back - the toggle
+       sent together with throttle 0 was refused every time (BEFUNDE P52).
+       So the script tries again for four seconds.  Once out, the FADEC
+       takes the reverse thrust from throttle-rev and ignores the forward
+       lever, so the depth goes there (0.05 idle reverse to 0.65 full, the
+       range of its own keys) and the forward throttle stays at idle.
+       Which of the two applies is only known inside the simulator: the
+       script says so in /sim/fgtouch/reverse-mode, and the depth waits
+       until that has been read back. */
+    void setReverse(bool on)
+    {
+        if (on == _reversing) return;
+        _reversing = on;
+        _reverseDepth = 0;
+        _throttle = 0;
+        sendNasal(QByteArray(
+            "var on = ") + (on ? "1" : "0") + QByteArray(";\n"
+            "var own = contains(globals, \"systems\") and contains(systems, \"toggleFastRevThrust\");\n"
+            "setprop(\"/sim/fgtouch/reverse-mode\", own ? \"aircraft\" : \"generic\");\n"
+            "setprop(\"/sim/fgtouch/reverse-wanted\", on);\n"
+            "if (own) {\n"
+            "    if (on) setprop(\"/sim/fgtouch/reverse-depth\", 0);\n"
+            "    var tries = 0;\n"
+            "    var step = func {\n"
+            "        if (getprop(\"/sim/fgtouch/reverse-wanted\") != on) return;\n"
+            "        var now = getprop(\"/controls/engines/engine[0]/reverser\") ? 1 : 0;\n"
+            "        if (now != on) {\n"
+            "            systems.toggleFastRevThrust();\n"
+            "            tries += 1;\n"
+            "            if (tries < 16) settimer(step, 0.25);\n"
+            "            return;\n"
+            "        }\n"
+            "        if (!on) return;\n"
+            "        var d = getprop(\"/sim/fgtouch/reverse-depth\") or 0;\n"
+            "        for (var i = 0; i < 8; i += 1)\n"
+            "            if (getprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\"))\n"
+            "                setprop(\"/controls/engines/engine[\" ~ i ~ \"]/throttle-rev\", 0.05 + 0.60 * d);\n"
+            "        settimer(step, 0.1);\n"
+            "    };\n"
+            "    step();\n"
+            "} else {\n"
+            "    setprop(\"/controls/engines/reverser-all\", on);\n"
+            "    for (var i = 0; i < 8; i += 1)\n"
+            "        setprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\", on);\n"
+            "}\n"));
+        if (on) {
+            _reverseMode = ReverseUnknown;
+            queryReverseMode(0);
+        }
+        emit changed();
+    }
+
+    /* How much reverse thrust, 0..1, while reversing */
+    void setReverseDepth(qreal depth)
+    {
+        _reverseDepth = clamp01(depth);
+        if (!_reversing) return;
+        if (_reverseMode == ReverseGeneric) {
+            _throttle = _reverseDepth;
+        } else if (_reverseMode == ReverseAircraft) {
+            _throttle = 0;
+            sendTelnet(QStringList() << "set /sim/fgtouch/reverse-depth "
+                                        + QString::number(_reverseDepth, 'f', 2));
+        }
+        emit changed();
+    }
+
+    /* A start in the air or on final approach wants running engines.
+       JSBSim starts them with /sim/presets/running, YASim jets and turbines
+       run anyway, a YASim piston engine does not - so once the scenery is
+       loaded, look, and start them where they are not running.  Never on
+       running engines: the A320's start procedure begins with cold and
+       dark, which in flight is a failure of everything. */
+    /* throttle > 0: set that once flying (final approach - the trim for a
+       descending path fails on many aircraft and leaves the lever at 0.8);
+       0: adopt what the trim found (level flight, where it succeeds). */
+    void startEngineWhenLoaded(qreal throttle)
+    {
+        _flightThrottle = throttle;
+        _loadWaitStarted.start();
+        pollLoadedForEngineStart();
+    }
+
+    void pollLoadedForEngineStart()
+    {
+        telnetQuery("get /sim/sceneryloaded", [this](const QString& out){
+            if (!out.contains("'true'")) {
+                if (_loadWaitStarted.elapsed() < 300000)
+                    QTimer::singleShot(2000, this, &ControlSender::pollLoadedForEngineStart);
+                return;
+            }
+            /* the flight model settles a few seconds after the scenery */
+            QTimer::singleShot(4000, this, [this]{
+                telnetQuery("get /engines/engine[0]/running", [this](const QString& out){
+                    if (out.contains("'true'") || out.contains("'1'")) {
+                        /* Take over the throttle the trim found.  The
+                           sender writes the throttle 30 times a second, and
+                           left at zero it would idle the engines the moment
+                           the flight began. */
+                        if (_flightThrottle > 0) {
+                            _throttle = clamp01(_flightThrottle);
+                            _engineOn = true;
+                            emit changed();
+                            return;
+                        }
+                        telnetQuery("get /controls/engines/engine[0]/throttle", [this](const QString& t){
+                            const auto m = QRegularExpression("'([0-9.eE+-]+)'").match(t);
+                            if (m.hasMatch()) _throttle = clamp01(m.captured(1).toDouble());
+                            _engineOn = true;
+                            emit changed();
+                        });
+                        return;
+                    }
+                    startEngine();
+                    if (_flightThrottle > 0) {
+                        _throttle = clamp01(_flightThrottle);
+                        emit changed();
+                    }
+                });
+            });
+        });
     }
 
     /* Freeze the simulation - used when the application goes to the
@@ -893,6 +1083,25 @@ private:
         pumpQueries();
     }
 
+    /* Which reverser logic the loaded aircraft uses, as setReverse's
+       script wrote it.  The script goes over the command connection and
+       this question over the other one, so the answer may still be the
+       empty property: ask again shortly. */
+    void queryReverseMode(int attempt)
+    {
+        telnetQuery("get /sim/fgtouch/reverse-mode", [this, attempt](const QString& out){
+            if (!_reversing) return;
+            if (out.contains("'aircraft'")) _reverseMode = ReverseAircraft;
+            else if (out.contains("'generic'")) _reverseMode = ReverseGeneric;
+            else {
+                if (attempt < 20)
+                    QTimer::singleShot(150, this, [this, attempt]{ queryReverseMode(attempt + 1); });
+                return;
+            }
+            setReverseDepth(_reverseDepth);
+        });
+    }
+
     /* "name = 'value' (type)" out of an ls reply */
     static QString propValue(const QString& lsOut, const QString& name)
     {
@@ -979,6 +1188,11 @@ private:
     QString _tutorialMessage, _tutorialName;
     QTimer  _tutorialPoll;
     bool    _paused = false;
+    bool    _reversing = false;
+    qreal   _reverseDepth = 0.0;
+    enum { ReverseUnknown, ReverseGeneric, ReverseAircraft } _reverseMode = ReverseUnknown;
+    QElapsedTimer _loadWaitStarted;
+    qreal _flightThrottle = 0.0;
     QElapsedTimer _viewSent;
     QTimer _viewTimer;
     /* Last view offsets sent, so a drag only puts a command on the wire

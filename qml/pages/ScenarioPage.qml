@@ -3,9 +3,9 @@ import Sailfish.Silica 1.0
 
 // FlightGear's AI scenarios from FGData/AI: carriers to land on, tankers,
 // wingmen, ships, balloons.  A carrier scenario starts the aircraft on the
-// deck; the others leave it where the airport is, and most of them sit
-// off San Francisco - the position is shown so nobody looks for a tanker
-// over Vienna.
+// deck, one that is somewhere (most sit around San Francisco) at the
+// nearest airport, and one that follows the aircraft - wingmen, drop
+// tanks - at the airport picked on the start page.
 Page {
     id: page
 
@@ -14,6 +14,7 @@ Page {
 
     function where(s) {
         if (s.carrier !== "") return qsTr("Starts on the carrier %1").arg(s.carrier)
+        if (s.airport) return qsTr("Starts at %1").arg(s.airportLabel)
         if (s.lat !== 0 || s.lon !== 0)
             return qsTr("Near %1, %2").arg(s.lat.toFixed(1)).arg(s.lon.toFixed(1))
         return qsTr("Follows the aircraft")

@@ -25,6 +25,19 @@ Page {
         path: "/apps/harbour-fgview/sim"
         property bool pauseInBackground: true
         property int  frameLimit: 0
+        property int  startMode: 0
+        property string aircraftKind: "piston"
+        property string scenarioCarrier: ""
+    }
+
+    // Started in the air or on final approach: engines have to run.  The
+    // sender waits for the scenery and starts only what is not running.
+    // On final, approach power for the kind of aircraft; in level flight,
+    // whatever the trim found.  Not on a carrier deck, which is a ground start.
+    Component.onCompleted: {
+        if (cfg.startMode === 0 || cfg.scenarioCarrier !== "") return
+        var approach = { piston: 0.35, turboprop: 0.45, jet: 0.55 }
+        ctl.startEngineWhenLoaded(cfg.startMode === 2 ? (approach[cfg.aircraftKind] || 0) : 0)
     }
 
     // Minimised, or the screen off: freeze the simulation, so it neither
@@ -57,9 +70,18 @@ Page {
 
     // ---- The rendered picture --------------------------------------
 
+    // The picture between the throttle and the button column, not under
+    // them.  The simulator renders in this shape (StartPage.renderGeometry),
+    // so it fills the space without bars.
     FrameItem {
         id: frame
-        anchors.fill: parent
+        anchors {
+            left: throttleBox.right
+            right: buttonColumn.left
+            top: parent.top
+            bottom: parent.bottom
+            rightMargin: Theme.paddingMedium
+        }
     }
 
     // ---- Turning the view by dragging -------------------------------
@@ -82,7 +104,7 @@ Page {
     // Declared before the controls, so throttle, rudder and buttons sit on
     // top and take their touch points first; what is left over lands here.
     MultiPointTouchArea {
-        anchors.fill: parent
+        anchors.fill: frame
         maximumTouchPoints: 2
         mouseEnabled: true
         touchPoints: [ TouchPoint { id: p1 }, TouchPoint { id: p2 } ]
@@ -217,18 +239,50 @@ Page {
             border.color: Theme.rgba(Theme.highlightColor, 0.4)
             border.width: 1
 
+            // Reverse zone: the bottom part of the bar.  Held there, the
+            // reversers deploy and the depth is the reverse thrust; let go
+            // or move back up and they stow with the throttle at idle.
+            readonly property real revZone: 0.18
+
             Rectangle {
-                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
-                anchors.margins: 2
-                height: (parent.height - 4) * ctl.throttle
+                id: revArea
+                anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: 2 }
+                height: (parent.height - 4) * parent.revZone
+                radius: Theme.paddingSmall
+                color: ctl.reversing ? Theme.rgba("#ff5030", 0.25) : Theme.rgba("#ff5030", 0.10)
+                border.color: Theme.rgba("#ff5030", 0.5)
+                border.width: 1
+                Label {
+                    anchors.centerIn: parent
+                    text: "REV"
+                    color: Theme.rgba("#ff5030", 0.9)
+                    font.pixelSize: Theme.fontSizeTiny
+                }
+            }
+
+            // forward thrust, above the reverse zone
+            Rectangle {
+                visible: !ctl.reversing
+                anchors { left: parent.left; right: parent.right; bottom: revArea.top; margins: 2; bottomMargin: 2 }
+                height: (parent.height - 4) * (1 - parent.revZone) * ctl.throttle
                 radius: Theme.paddingSmall
                 color: Theme.rgba(Theme.highlightColor, 0.55)
             }
 
+            // reverse thrust, growing downwards in the zone
+            Rectangle {
+                visible: ctl.reversing
+                anchors { left: parent.left; right: parent.right; top: revArea.top; margins: 2 }
+                height: revArea.height * ctl.reverseDepth
+                radius: Theme.paddingSmall
+                color: Theme.rgba("#ff5030", 0.6)
+            }
+
             Label {
                 anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.top }
-                text: Math.round(ctl.throttle * 100) + "%"
-                color: Theme.highlightColor
+                text: ctl.reversing ? "REV " + Math.round(ctl.reverseDepth * 100) + "%"
+                                    : Math.round(ctl.throttle * 100) + "%"
+                color: ctl.reversing ? "#ff5030" : Theme.highlightColor
                 font.pixelSize: Theme.fontSizeExtraSmall
             }
 
@@ -242,8 +296,22 @@ Page {
                 touchPoints: [ TouchPoint { id: thrPoint } ]
                 onPressed: setFromY(thrPoint.y)
                 onUpdated: setFromY(thrPoint.y)
+                onReleased: {
+                    // stows at idle
+                    if (ctl.reversing) ctl.setReverse(false)
+                }
                 function setFromY(y) {
-                    ctl.throttle = Math.max(0, Math.min(1, 1 - y / height))
+                    var rz = parent.revZone
+                    var f = Math.max(0, Math.min(1, 1 - y / height))   // 1 at the top
+                    if (f < rz) {
+                        // deploys at idle; where the depth goes (throttle or
+                        // the A320's reverse levers) ControlSender decides
+                        if (!ctl.reversing) ctl.setReverse(true)
+                        ctl.setReverseDepth((rz - f) / rz)
+                    } else {
+                        if (ctl.reversing) ctl.setReverse(false)
+                        ctl.throttle = (f - rz) / (1 - rz)
+                    }
                 }
             }
         }
@@ -309,7 +377,7 @@ Page {
     Rectangle {
         id: lessonBox
         visible: ctl.tutorialRunning
-        anchors { left: parent.left; right: buttonColumn.left; top: parent.top; margins: Theme.paddingMedium }
+        anchors { left: frame.left; right: frame.right; top: parent.top; margins: Theme.paddingMedium }
         height: lessonText.height + 2 * Theme.paddingMedium
         color: Theme.rgba(Theme.highlightDimmerColor, 0.8)
         radius: Theme.paddingSmall

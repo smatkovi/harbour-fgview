@@ -32,6 +32,11 @@
 #include <QUrl>
 #include <QVariantMap>
 #include <algorithm>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QVector>
+#include <cmath>
 
 class FgRuntime : public QObject
 {
@@ -175,6 +180,12 @@ public:
     int hangarProgress() const { return _hangarProgress; }
 
 public slots:
+    /* An environment variable, for test hooks in QML (FGVIEW_AUTOSTART). */
+    QString envValue(const QString& name) const
+    {
+        return QString::fromLocal8Bit(qgetenv(name.toLocal8Bit().constData()));
+    }
+
     void downloadData()
     {
         if (busy() || _resolving) return;
@@ -295,20 +306,47 @@ public slots:
                    can be hundreds of kilobytes and the description is in the
                    first few. */
                 QString name;
+                QString text;
                 QFile f(path);
                 if (f.open(QIODevice::ReadOnly)) {
-                    const QString head = QString::fromUtf8(f.read(16384));
+                    text = QString::fromUtf8(f.read(262144));
                     QRegularExpressionMatch m =
                         QRegularExpression("<description>(.*?)</description>",
                                            QRegularExpression::DotMatchesEverythingOption)
-                        .match(head);
+                        .match(text.left(16384));
                     if (m.hasMatch()) name = m.captured(1).trimmed();
                 }
                 if (name.isEmpty()) name = id;
 
+                /* What kind of aircraft, from its tags - for the speed of a
+                   start in the air or on final approach.  The A320 family
+                   keeps its tags in the file the -set.xml includes, so the
+                   includes are read as well. */
+                {
+                    const QString dir = QFileInfo(path).absolutePath();
+                    auto inc = QRegularExpression("include=\"([^\"]+)\"").globalMatch(text.left(4096));
+                    int n = 0;
+                    while (inc.hasNext() && n++ < 3) {
+                        QFile fi(dir + "/" + inc.next().captured(1));
+                        if (fi.open(QIODevice::ReadOnly))
+                            text += QString::fromUtf8(fi.read(262144));
+                    }
+                }
+                QStringList tags;
+                auto tm = QRegularExpression("<tag>\\s*([^<\\s]+)\\s*</tag>").globalMatch(text);
+                while (tm.hasNext()) tags << tm.next().captured(1).toLower();
+                QString kind;
+                if (tags.contains("helicopter")) kind = "helicopter";
+                else if (tags.contains("glider")) kind = "glider";
+                else if (tags.contains("jet")) kind = "jet";
+                else if (tags.contains("turboprop")) kind = "turboprop";
+                else if (tags.contains("piston") || tags.contains("propeller")
+                         || tags.contains("single-engine")) kind = "piston";
+
                 QVariantMap e;
                 e["id"] = id;
                 e["name"] = name;
+                e["kind"] = kind;
                 e["dir"] = QFileInfo(path).absolutePath();
                 _aircraft.append(e);
             }
@@ -418,19 +456,123 @@ public slots:
                 auto n = QRegularExpression("<name>(.*?)</name>", dot).match(entry);
                 auto la = QRegularExpression("<latitude>(.*?)</latitude>", dot).match(entry);
                 auto lo = QRegularExpression("<longitude>(.*?)</longitude>", dot).match(entry);
+                auto fp = QRegularExpression("<flightplan>(.*?)</flightplan>", dot).match(entry);
                 if (carrier.isEmpty() && t.hasMatch() && t.captured(1).trimmed() == "carrier" && n.hasMatch())
                     carrier = n.captured(1).trimmed();
                 if (lat == 0.0 && lon == 0.0 && la.hasMatch() && lo.hasMatch()) {
                     lat = la.captured(1).trimmed().toDouble();
                     lon = lo.captured(1).trimmed().toDouble();
                 }
+                /* Most objects that are not placed by coordinates follow a
+                   flight plan (the KSFO departures, trains, ships): they are
+                   where its first waypoint is. */
+                if (lat == 0.0 && lon == 0.0 && fp.hasMatch())
+                    firstWaypoint(fp.captured(1).trimmed(), &lat, &lon);
+            }
+            /* the trains name their flight plan once in the parameters, and
+               the entries point at it with an alias */
+            if (carrier.isEmpty() && lat == 0.0 && lon == 0.0) {
+                auto fp = QRegularExpression("<flightplan>([^<]+)</flightplan>").match(x);
+                if (fp.hasMatch())
+                    firstWaypoint(fp.captured(1).trimmed(), &lat, &lon);
             }
             e["carrier"] = carrier;
             e["lat"] = lat;
             e["lon"] = lon;
+            e["airport"] = QString();
+            e["airportLabel"] = QString();
+            e["airportLat"] = 0.0;
+            e["airportLon"] = 0.0;
             _scenarios.append(e);
         }
+        nearestAirports();
         emit aircraftChanged();
+    }
+
+    /* Where a flight plan in FGData/AI/FlightPlans is: its first waypoint on
+       the ground, or the first waypoint if none is - the shuttle's plan
+       begins 110 km out and ends on the dry lake at Edwards. */
+    void firstWaypoint(const QString& file, double* lat, double* lon) const
+    {
+        QFile f(fgRoot() + "/AI/FlightPlans/" + file);
+        if (!f.open(QIODevice::ReadOnly)) return;
+        const QString x = QString::fromUtf8(f.readAll());
+        const QRegularExpression::PatternOption dot = QRegularExpression::DotMatchesEverythingOption;
+        bool haveFirst = false;
+        auto it = QRegularExpression("<wpt>(.*?)</wpt>", dot).globalMatch(x);
+        while (it.hasNext()) {
+            const QString w = it.next().captured(1);
+            auto la = QRegularExpression("<lat>(.*?)</lat>", dot).match(w);
+            auto lo = QRegularExpression("<lon>(.*?)</lon>", dot).match(w);
+            if (!la.hasMatch() || !lo.hasMatch()) continue;
+            const bool ground = QRegularExpression("<on-ground>\\s*(true|1)\\s*</on-ground>").match(w).hasMatch();
+            if (ground || !haveFirst) {
+                *lat = la.captured(1).trimmed().toDouble();
+                *lon = lo.captured(1).trimmed().toDouble();
+                haveFirst = true;
+            }
+            if (ground) return;
+        }
+    }
+
+    /* A scenario that is somewhere - off San Francisco, on a railway in
+       Germany - does nothing for an aircraft at the airport picked on the
+       start page: FlightGear loads the objects where they are, and nobody
+       sees them.  So such a scenario brings its own departure airport from
+       the list the airport picker uses: the airport it is on, if one is
+       within 3 km (the glider tow at Reid-Hillview), otherwise a large one
+       within 40 km (the ships in the bay start at KSFO rather than at a
+       heliport a little closer), otherwise the nearest. */
+    void nearestAirports()
+    {
+        struct Best { double d = 1e18; QVariantList a; };
+        QVector<Best> large(_scenarios.size()), any(_scenarios.size());
+        bool wanted = false;
+        for (const QVariant& v : _scenarios) {
+            const QVariantMap m = v.toMap();
+            if (m["carrier"].toString().isEmpty() && (m["lat"].toDouble() != 0.0 || m["lon"].toDouble() != 0.0))
+                wanted = true;
+        }
+        if (!wanted) return;
+        const auto dist = [](double la1, double lo1, double la2, double lo2) {
+            const double r = M_PI / 180.0;
+            const double a = std::sin((la2 - la1) * r / 2), b = std::sin((lo2 - lo1) * r / 2);
+            return 2 * 6371.0 * std::asin(std::sqrt(a * a + std::cos(la1 * r) * std::cos(la2 * r) * b * b));
+        };
+        QDir dir(AIRPORT_DATA);
+        for (const QFileInfo& fi : dir.entryInfoList(QStringList() << "*.json", QDir::Files)) {
+            if (fi.fileName() == "countries.json") continue;
+            QFile f(fi.absoluteFilePath());
+            if (!f.open(QIODevice::ReadOnly)) continue;
+            const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+            for (const QString& size : {QStringLiteral("large"), QStringLiteral("small")}) {
+                for (const QJsonValue& av : o[size].toArray()) {
+                    const QJsonArray a = av.toArray();
+                    if (a.size() < 5) continue;
+                    const double la = a[3].toDouble(), lo = a[4].toDouble();
+                    for (int i = 0; i < _scenarios.size(); ++i) {
+                        const QVariantMap m = _scenarios[i].toMap();
+                        if (!m["carrier"].toString().isEmpty()) continue;
+                        const double sla = m["lat"].toDouble(), slo = m["lon"].toDouble();
+                        if (sla == 0.0 && slo == 0.0) continue;
+                        const double d = dist(sla, slo, la, lo);
+                        if (d < any[i].d) { any[i].d = d; any[i].a = a.toVariantList(); }
+                        if (size == "large" && d < large[i].d) { large[i].d = d; large[i].a = a.toVariantList(); }
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < _scenarios.size(); ++i) {
+            const QVariantList& a = any[i].d <= 3.0 ? any[i].a
+                                  : large[i].d <= 40.0 ? large[i].a : any[i].a;
+            if (a.isEmpty() || any[i].d > 200.0) continue;
+            QVariantMap m = _scenarios[i].toMap();
+            m["airport"] = a[0].toString();
+            m["airportLabel"] = a[1].toString() + " (" + a[0].toString() + ")";
+            m["airportLat"] = a[3].toDouble();
+            m["airportLon"] = a[4].toDouble();
+            _scenarios[i] = m;
+        }
     }
 
     /* Scenery for somewhere else than the departure airport - a lesson
@@ -1078,6 +1220,8 @@ private:
     static const quint64 EXTRACTED_BYTES = 2705459200ULL;
 
     static constexpr const char* SCENERY_TOOL = "/opt/fgfs/bin/fgfs-scenery";
+    /* the airport list the picker pages read, one JSON file per country */
+    static constexpr const char* AIRPORT_DATA = "/usr/share/harbour-fgview/airports";
     enum SceneryPhase { SceneryIdle, SceneryCheck, SceneryFetch };
     enum SceneryThen { SceneryThenLaunch, SceneryThenSignal };
     SceneryThen _sceneryThen = SceneryThenLaunch;

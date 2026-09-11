@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.10.1
+Version:    0.11.2
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,58 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.2-1
+- Reverse thrust works on the A320 family. Its toggle deploys only once
+  the FADEC reports both levers at IDLE, which it does a moment after the
+  lever is back, and the toggle arrived before that every time. The app
+  now keeps trying for four seconds, holds the forward lever at idle, and
+  puts the depth of the REV zone on the reverse levers (throttle-rev),
+  which is where the A320 takes reverse thrust from. Measured: both
+  reversers out, N1 46 -> 74 percent at full depth, stowed on release.
+  Other aircraft keep the reverser property and the throttle as before.
+
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.1-1
+- Scenarios that are somewhere start there. The KSFO departures, the
+  ships in the bay, the trains near Frankfurt and in Yorkshire, the shuttle
+  at Edwards were loaded where they are while the aircraft sat at the
+  airport from the start page, so nothing of them was ever seen. Such a
+  scenario now brings its departure airport (the one it is on, else a
+  large one within 40 km, else the nearest), found from its coordinates or
+  the first ground waypoint of its flight plan; the start page names it.
+  Wingmen, drop tanks and the balloons follow the aircraft and still start
+  at the chosen airport.
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.0-1
+- Lessons and pausing in the background work again. 0.10.2 lost the
+  slots behind them (setPaused, the tutorial calls) when the engine start
+  was rewritten; the C++ still compiled because only QML calls them. The
+  build now checks that every method and property the QML uses on the
+  runtime and the controls exists in the C++ (tools-check-qml-api.py).
+- The picture sits between the throttle and the button column instead of
+  under them, and the simulator renders in that shape (--geometry, 720
+  lines), so it fills the space without bars.
+- Reverse thrust: the bottom part of the throttle is a REV zone. Held
+  there, the reversers deploy and the depth is the reverse thrust; let go
+  or move back up and they stow with the throttle at idle. The A320 family
+  uses its own reverser logic, other aircraft the standard reverser
+  property.
+- Runway choice: after the airport, pick a runway or leave it to FlightGear
+  (into the wind). The airport lists carry the runway ends from apt.dat.
+- Start on the ground, in the air or on final approach: 5 nm out on a 3°
+  glide path to the chosen runway (1.5 nm, 6° for helicopters), aligned
+  with it, at an approach speed for the kind of aircraft (from its tags),
+  engines running and at approach power. In the air and on final the
+  aircraft is trimmed; engines that do not run by then are started.
+
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.10.2-1
+- Engine start uses the aircraft's own start-up procedure when it has one
+  (autostart or startup in its Nasal namespaces): the ec135 now releases
+  its rotor brake, arms both FADECs and spins the rotor up (291 rpm
+  measured), the c172p runs its full autostart. Aircraft without one keep
+  the generic sequence; the rotor brake is released for every aircraft.
+  Engine stop likewise calls autoshutdown or shutdown first.
+- The cockpit opens reliably after a start: the push was dropped when it
+  fell into a page transition, and a flag kept it from being retried.
+
 * Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.10.1-1
 - The lessons no longer have a button of their own in the cockpit: the
   control column was full and a ninth row did not fit on the screen.

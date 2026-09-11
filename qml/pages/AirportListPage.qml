@@ -32,7 +32,7 @@ Page {
 
     Component.onCompleted: load()
 
-    // Entries are [icao, name, longest runway in metres].
+    // Entries are [icao, name, longest runway in metres, lat, lon, [runway ends]].
     function shown() {
         if (filter === "") return all
         var f = filter.toLowerCase()
@@ -97,12 +97,20 @@ Page {
             }
 
             onClicked: {
-                // Reach back to the country page, which is what the caller
-                // connected to, then unwind the whole picker in one go.
+                // With runways in the list, one more step to pick one;
+                // otherwise reach back to the country page, which is what
+                // the caller connected to, and unwind the picker in one go.
+                var rwys = modelData.length > 5 ? modelData[5] : []
+                if (rwys.length > 0) {
+                    pageStack.push(Qt.resolvedUrl("RunwayPage.qml"), {
+                        root: page.root, icao: modelData[0], name: modelData[1],
+                        lat: modelData[3], lon: modelData[4], runways: rwys })
+                    return
+                }
                 if (page.root)
                     page.root.picked(modelData[0], modelData[1] + " (" + modelData[0] + ")",
                                      modelData.length > 4 ? modelData[3] : 0,
-                                     modelData.length > 4 ? modelData[4] : 0)
+                                     modelData.length > 4 ? modelData[4] : 0, "")
                 pageStack.pop(page.root, PageStackAction.Immediate)
                 pageStack.pop()
             }

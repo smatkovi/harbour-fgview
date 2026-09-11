@@ -10,7 +10,7 @@ Page {
     id: page
 
     property var rt                        // FgRuntime
-    signal picked(string id, string label)
+    signal picked(string id, string label, string kind)
 
     SilicaListView {
         anchors.fill: parent
@@ -97,7 +97,7 @@ Page {
             }
 
             onClicked: {
-                page.picked(modelData.id, modelData.name)
+                page.picked(modelData.id, modelData.name, modelData.kind || "")
                 pageStack.pop()
             }
         }
