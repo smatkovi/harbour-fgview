@@ -125,6 +125,13 @@ Page {
                 onCheckedChanged: cfg.pauseInBackground = checked
             }
 
+            Label {
+                x: Theme.horizontalPageMargin; width: parent.width - 2 * x
+                wrapMode: Text.WordWrap; font.pixelSize: Theme.fontSizeExtraSmall
+                color: Theme.secondaryColor
+                text: qsTr("In flight, holding “View” opens the lessons: FlightGear's step-by-step tutorials for the aircraft, if it has any. The c172p brings fourteen.")
+            }
+
             SectionHeader { text: qsTr("Scenery") }
 
             Slider {

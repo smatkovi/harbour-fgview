@@ -328,6 +328,7 @@ Page {
             text: "✕"
             onClicked: ctl.stopTutorial()
         }
+
     }
 
     // paused in the background: say so when the picture comes back
@@ -374,17 +375,15 @@ Page {
             }
         }
 
+        // Lessons on a long press rather than a button of their own: the
+        // column was full, and a ninth row did not fit on the screen.
         FlatButton {
             width: parent.width
             text: qsTr("View")
-            onClicked: ctl.cycleView()
-        }
-
-        FlatButton {
-            width: parent.width
-            text: ctl.tutorialRunning ? qsTr("Lesson…") : qsTr("Lessons")
             color: ctl.tutorialRunning ? Theme.highlightColor : Theme.primaryColor
-            onClicked: pageStack.push(Qt.resolvedUrl("LessonsPage.qml"), { ctl: ctl, rt: page.rt })
+            onClicked: ctl.cycleView()
+            onPressAndHold: pageStack.push(Qt.resolvedUrl("LessonsPage.qml"),
+                                           { ctl: ctl, rt: page.rt })
         }
 
         FlatButton {

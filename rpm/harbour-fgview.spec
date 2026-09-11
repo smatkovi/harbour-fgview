@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.10.0
+Version:    0.10.1
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,12 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.10.1-1
+- The lessons no longer have a button of their own in the cockpit: the
+  control column was full and a ninth row did not fit on the screen.
+  Holding "View" opens the list instead; the button turns highlighted
+  while a lesson runs, and the settings say so.
+
 * Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.10.0-1
 - Lessons: FlightGear's tutorials for the loaded aircraft (the c172p has
   fourteen, from preflight to engine failure) can be started from the
