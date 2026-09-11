@@ -415,6 +415,10 @@ public:
         connect(&_tutorialPoll, &QTimer::timeout, this, &ControlSender::pollTutorial);
         /* coalesced view updates from a drag, see setViewOffsets() */
         _viewTimer.setSingleShot(true);
+        _stowTimer.setSingleShot(true);
+        connect(&_stowTimer, &QTimer::timeout, this, [this]{
+            if (!_reversing) { _throttle = _throttleWanted; emit changed(); }
+        });
         connect(&_viewTimer, &QTimer::timeout, this, &ControlSender::flushViewOffsets);
         _accel.setDataRate(50);
         _accel.start();
@@ -441,7 +445,23 @@ public:
     bool  reversing() const { return _reversing; }
     qreal reverseDepth() const { return _reverseDepth; }
 
-    void setThrottle(qreal v) { _throttle = clamp01(v); emit changed(); }
+    /* Right after the reversers were told to stow, forward thrust waits:
+       the stow travels over telnet, which FlightGear polls at 5 Hz, while
+       the throttle goes out over UDP 30 times a second - pushed up out of
+       the REV zone, the aircraft would otherwise get that much thrust with
+       the reversers still out. */
+    void setThrottle(qreal v)
+    {
+        _throttleWanted = clamp01(v);
+        const qint64 held = _stowed.isValid() ? _stowed.elapsed() : STOW_HOLD_MS;
+        if (held < STOW_HOLD_MS) {
+            _throttle = 0;
+            if (!_stowTimer.isActive()) _stowTimer.start(int(STOW_HOLD_MS - held));
+        } else {
+            _throttle = _throttleWanted;
+        }
+        emit changed();
+    }
     void setRudder(qreal v)   { _rudder = clamp11(v);   emit changed(); }
     void setFlaps(qreal v)    { _flaps = clamp01(v);    emit changed(); }
     void setBrake(qreal v)
@@ -628,7 +648,8 @@ public slots:
        it deploys only with both levers at idle AND its FADEC reporting
        IDLE, which happens a moment after the lever is back - the toggle
        sent together with throttle 0 was refused every time (BEFUNDE P52).
-       So the script tries again for four seconds.  Once out, the FADEC
+       So the script keeps trying for as long as reverse is wanted, and
+       each request carries a serial so that only the newest loop runs.  Once out, the FADEC
        takes the reverse thrust from throttle-rev and ignores the forward
        lever, so the depth goes there (0.05 idle reverse to 0.65 full, the
        range of its own keys) and the forward throttle stays at idle.
@@ -641,29 +662,44 @@ public slots:
         _reversing = on;
         _reverseDepth = 0;
         _throttle = 0;
+        if (!on) _stowed.start();
         sendNasal(QByteArray(
             "var on = ") + (on ? "1" : "0") + QByteArray(";\n"
             "var own = contains(globals, \"systems\") and contains(systems, \"toggleFastRevThrust\");\n"
             "setprop(\"/sim/fgtouch/reverse-mode\", own ? \"aircraft\" : \"generic\");\n"
-            "setprop(\"/sim/fgtouch/reverse-wanted\", on);\n"
+            "# each request gets a number; a loop of an older one ends by itself\n"
+            "var serial = (getprop(\"/sim/fgtouch/reverse-serial\") or 0) + 1;\n"
+            "setprop(\"/sim/fgtouch/reverse-serial\", serial);\n"
+            "var out = func {\n"
+            "    for (var i = 0; i < 8; i += 1)\n"
+            "        if (getprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\")) return 1;\n"
+            "    return 0;\n"
+            "};\n"
             "if (own) {\n"
             "    if (on) setprop(\"/sim/fgtouch/reverse-depth\", 0);\n"
             "    var tries = 0;\n"
             "    var step = func {\n"
-            "        if (getprop(\"/sim/fgtouch/reverse-wanted\") != on) return;\n"
-            "        var now = getprop(\"/controls/engines/engine[0]/reverser\") ? 1 : 0;\n"
+            "        if (getprop(\"/sim/fgtouch/reverse-serial\") != serial) return;\n"
+            "        var now = out();\n"
             "        if (now != on) {\n"
             "            systems.toggleFastRevThrust();\n"
             "            tries += 1;\n"
-            "            if (tries < 16) settimer(step, 0.25);\n"
-            "            return;\n"
+            "            now = out();\n"
             "        }\n"
-            "        if (!on) return;\n"
-            "        var d = getprop(\"/sim/fgtouch/reverse-depth\") or 0;\n"
-            "        for (var i = 0; i < 8; i += 1)\n"
-            "            if (getprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\"))\n"
-            "                setprop(\"/controls/engines/engine[\" ~ i ~ \"]/throttle-rev\", 0.05 + 0.60 * d);\n"
-            "        settimer(step, 0.1);\n"
+            "        if (on) {\n"
+            "            # out: the depth onto the reverse levers; not yet: the\n"
+            "            # FADEC has not seen idle, try again for as long as the\n"
+            "            # finger stays in the zone\n"
+            "            if (now) {\n"
+            "                var d = getprop(\"/sim/fgtouch/reverse-depth\") or 0;\n"
+            "                for (var i = 0; i < 8; i += 1)\n"
+            "                    if (getprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\"))\n"
+            "                        setprop(\"/controls/engines/engine[\" ~ i ~ \"]/throttle-rev\", 0.05 + 0.60 * d);\n"
+            "            }\n"
+            "            settimer(step, now ? 0.1 : 0.25);\n"
+            "        } else if (now and tries < 16) {\n"
+            "            settimer(step, 0.25);\n"
+            "        }\n"
             "    };\n"
             "    step();\n"
             "} else {\n"
@@ -1195,6 +1231,10 @@ private:
     qreal _flightThrottle = 0.0;
     QElapsedTimer _viewSent;
     QTimer _viewTimer;
+    static constexpr qint64 STOW_HOLD_MS = 300;
+    QElapsedTimer _stowed;
+    QTimer _stowTimer;
+    qreal _throttleWanted = 0.0;
     /* Last view offsets sent, so a drag only puts a command on the wire
        when the rounded degree actually changes. */
     int   _viewHeading = 0;

@@ -300,6 +300,12 @@ Page {
                     // stows at idle
                     if (ctl.reversing) ctl.setReverse(false)
                 }
+                // Qt cancels instead of releasing when something else takes
+                // the touch (a system gesture, the app losing focus) - the
+                // reversers must not stay out then either
+                onCanceled: {
+                    if (ctl.reversing) ctl.setReverse(false)
+                }
                 function setFromY(y) {
                     var rz = parent.revZone
                     var f = Math.max(0, Math.min(1, 1 - y / height))   // 1 at the top

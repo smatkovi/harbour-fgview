@@ -32,6 +32,7 @@
 #include <QUrl>
 #include <QVariantMap>
 #include <algorithm>
+#include <vector>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -483,6 +484,7 @@ public slots:
             e["airportLabel"] = QString();
             e["airportLat"] = 0.0;
             e["airportLon"] = 0.0;
+            e["airportElev"] = 0.0;
             _scenarios.append(e);
         }
         nearestAirports();
@@ -525,53 +527,56 @@ public slots:
        heliport a little closer), otherwise the nearest. */
     void nearestAirports()
     {
-        struct Best { double d = 1e18; QVariantList a; };
-        QVector<Best> large(_scenarios.size()), any(_scenarios.size());
-        bool wanted = false;
-        for (const QVariant& v : _scenarios) {
-            const QVariantMap m = v.toMap();
-            if (m["carrier"].toString().isEmpty() && (m["lat"].toDouble() != 0.0 || m["lon"].toDouble() != 0.0))
-                wanted = true;
+        /* The scenarios that need an airport, as plain numbers: the loop
+           below runs once per airport (27 000) and must not dig through
+           QVariantMaps for each of them. */
+        struct Place { int index; double lat, lon; double dAny = 1e18, dLarge = 1e18; QJsonArray any, large; };
+        std::vector<Place> places;
+        for (int i = 0; i < _scenarios.size(); ++i) {
+            const QVariantMap m = _scenarios[i].toMap();
+            const double la = m["lat"].toDouble(), lo = m["lon"].toDouble();
+            if (m["carrier"].toString().isEmpty() && (la != 0.0 || lo != 0.0))
+                places.push_back(Place{i, la, lo});
         }
-        if (!wanted) return;
+        if (places.empty()) return;
         const auto dist = [](double la1, double lo1, double la2, double lo2) {
             const double r = M_PI / 180.0;
             const double a = std::sin((la2 - la1) * r / 2), b = std::sin((lo2 - lo1) * r / 2);
             return 2 * 6371.0 * std::asin(std::sqrt(a * a + std::cos(la1 * r) * std::cos(la2 * r) * b * b));
         };
+        const QString large = QStringLiteral("large"), small = QStringLiteral("small");
         QDir dir(AIRPORT_DATA);
         for (const QFileInfo& fi : dir.entryInfoList(QStringList() << "*.json", QDir::Files)) {
             if (fi.fileName() == "countries.json") continue;
             QFile f(fi.absoluteFilePath());
             if (!f.open(QIODevice::ReadOnly)) continue;
             const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
-            for (const QString& size : {QStringLiteral("large"), QStringLiteral("small")}) {
+            for (const QString& size : {large, small}) {
+                const bool isLarge = size == large;
                 for (const QJsonValue& av : o[size].toArray()) {
                     const QJsonArray a = av.toArray();
                     if (a.size() < 5) continue;
                     const double la = a[3].toDouble(), lo = a[4].toDouble();
-                    for (int i = 0; i < _scenarios.size(); ++i) {
-                        const QVariantMap m = _scenarios[i].toMap();
-                        if (!m["carrier"].toString().isEmpty()) continue;
-                        const double sla = m["lat"].toDouble(), slo = m["lon"].toDouble();
-                        if (sla == 0.0 && slo == 0.0) continue;
-                        const double d = dist(sla, slo, la, lo);
-                        if (d < any[i].d) { any[i].d = d; any[i].a = a.toVariantList(); }
-                        if (size == "large" && d < large[i].d) { large[i].d = d; large[i].a = a.toVariantList(); }
+                    for (Place& p : places) {
+                        const double d = dist(p.lat, p.lon, la, lo);
+                        if (d < p.dAny) { p.dAny = d; p.any = a; }
+                        if (isLarge && d < p.dLarge) { p.dLarge = d; p.large = a; }
                     }
                 }
             }
         }
-        for (int i = 0; i < _scenarios.size(); ++i) {
-            const QVariantList& a = any[i].d <= 3.0 ? any[i].a
-                                  : large[i].d <= 40.0 ? large[i].a : any[i].a;
-            if (a.isEmpty() || any[i].d > 200.0) continue;
-            QVariantMap m = _scenarios[i].toMap();
+        for (const Place& p : places) {
+            const QJsonArray& a = p.dAny <= 3.0 ? p.any
+                                : p.dLarge <= 40.0 ? p.large : p.any;
+            if (a.isEmpty() || p.dAny > 200.0) continue;
+            QVariantMap m = _scenarios[p.index].toMap();
             m["airport"] = a[0].toString();
             m["airportLabel"] = a[1].toString() + " (" + a[0].toString() + ")";
             m["airportLat"] = a[3].toDouble();
             m["airportLon"] = a[4].toDouble();
-            _scenarios[i] = m;
+            /* field elevation in feet, from 0.11.3's lists on */
+            m["airportElev"] = a.size() > 6 ? a[6].toDouble() : 0.0;
+            _scenarios[p.index] = m;
         }
     }
 
@@ -1196,6 +1201,8 @@ private slots:
             QFile::copy("/opt/fgfs/share/fgtouch.xml",
                         fgRoot() + "/Protocol/fgtouch.xml");
             _status = tr("Base data ready");
+            /* the scenario list was read at start-up, before FGData was here */
+            refreshScenarios();
             QFile::remove(_root + "/fgdata.txz");
             QFile::remove(_root + "/fgdata.txz.aria2");
         } else {

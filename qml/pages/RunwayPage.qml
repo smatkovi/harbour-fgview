@@ -12,11 +12,12 @@ Page {
     property string name: ""
     property real lat: 0
     property real lon: 0
+    property real elev: 0                 // field elevation, feet
     property var runways: []
 
     function pick(rwy) {
         if (page.root)
-            page.root.picked(page.icao, page.name + " (" + page.icao + ")", page.lat, page.lon, rwy)
+            page.root.picked(page.icao, page.name + " (" + page.icao + ")", page.lat, page.lon, rwy, page.elev)
         pageStack.pop(page.root, PageStackAction.Immediate)
         pageStack.pop()
     }

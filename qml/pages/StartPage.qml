@@ -28,18 +28,25 @@ Page {
     // deck and ignores all of this.
     function startModeArgs() {
         if (simCfg.scenarioCarrier !== "") return []
-        // the chosen runway belongs to the chosen airport, not the scenario's
+        // the chosen runway belongs to the chosen airport; it still
+        // applies when the scenario's airport is that same one
         var place = scenarioPlace()
+        var elsewhere = place && place.airport !== simCfg.airport
         var kind = simCfg.aircraftKind
         var approach = { jet: 150, turboprop: 120, piston: 75, helicopter: 50, glider: 55 }
         var cruise   = { jet: 250, turboprop: 200, piston: 110, helicopter: 90, glider: 60 }
         var args = []
-        if (simCfg.startMode !== 1 && simCfg.runway !== "" && !place)
+        if (simCfg.startMode !== 1 && simCfg.runway !== "" && !elsewhere)
             args.push("--runway=" + simCfg.runway)
         // --trim: JSBSim otherwise releases the aircraft untrimmed at that
         // speed, and a c172p on final was in a spiral within 20 seconds
         if (simCfg.startMode === 1) {
-            args.push("--altitude=3000", "--vc=" + (cruise[kind] || 120),
+            // 3000 ft above the field, not above the sea: at Denver or La
+            // Paz a fixed 3000 is below the ground and the aircraft stood
+            // on the runway
+            var elev = elsewhere ? (place.airportElev || 0)
+                     : (simCfg.airportCoordsIcao === simCfg.airport ? simCfg.airportElev : 0)
+            args.push("--altitude=" + Math.round(elev + 3000), "--vc=" + (cruise[kind] || 120),
                       "--prop:/sim/presets/running=true", "--trim")
         } else if (simCfg.startMode === 2) {
             // FlightGear works the altitude out from distance and glide
@@ -235,6 +242,10 @@ Page {
         property real airportLat: 48.110
         property real airportLon: 16.570
         property string airportCoordsIcao: "LOWW"
+        // Field elevation in feet, for a start in the air: --altitude is
+        // above sea level.  Belongs to airportCoordsIcao, like the
+        // coordinates; 0 for a pick made before 0.11.3.
+        property real airportElev: 0
         // "" = FlightGear picks the runway into the wind
         property string runway: ""
         // 0 on the ground, 1 in the air, 2 on final approach
@@ -420,17 +431,18 @@ Page {
                     label: qsTr("Departure airport")
                     value: (simCfg.airportLabel !== "" ? simCfg.airportLabel : simCfg.airport)
                            + (simCfg.runway !== "" ? " · " + qsTr("runway %1").arg(simCfg.runway) : "")
-                    description: page.scenarioPlace()
+                    description: page.scenarioPlace() && page.scenarioPlace().airport !== simCfg.airport
                                  ? qsTr("The scenario starts at %1 instead").arg(page.scenarioPlace().airportLabel)
                                  : ""
                     onClicked: {
                         var p = pageStack.push(Qt.resolvedUrl("AirportCountryPage.qml"))
-                        p.picked.connect(function(icao, label, lat, lon, runway) {
+                        p.picked.connect(function(icao, label, lat, lon, runway, elev) {
                             simCfg.airport = icao
                             simCfg.airportLabel = label
                             simCfg.airportLat = lat
                             simCfg.airportLon = lon
                             simCfg.airportCoordsIcao = icao
+                            simCfg.airportElev = elev
                             simCfg.runway = runway
                         })
                     }

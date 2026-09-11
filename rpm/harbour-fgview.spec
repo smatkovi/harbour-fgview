@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.11.2
+Version:    0.11.3
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,26 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.3-1
+- A start in the air is 3000 ft above the airport, not above the sea. At
+  airports higher than that (Denver, La Paz) the aircraft stood on the
+  runway. The airport lists carry the field elevation now; an airport
+  picked with an older version starts at 3000 ft above sea level until it
+  is picked again.
+- A runway picked at an airport still applies when the chosen scenario
+  starts at that same airport, and the start page no longer says the
+  scenario moves the start when it does not.
+- Reverse thrust on the A320: the deploy is retried for as long as the
+  finger stays in the REV zone, not for four seconds only, and a deploy on
+  the last try no longer leaves full reverse set. A touch that the system
+  cancels (instead of releasing) stows the reversers too. Pushed up out of
+  the zone, forward thrust follows 0.3 s later, once the stow has reached
+  the simulator.
+- The scenario list is read again once the base data has been downloaded;
+  on a first start it stayed empty until the app was restarted.
+- Finding the scenarios' airports costs a fraction of what it did at app
+  start.
+
 * Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.2-1
 - Reverse thrust works on the A320 family. Its toggle deploys only once
   the FADEC reports both levers at IDLE, which it does a moment after the

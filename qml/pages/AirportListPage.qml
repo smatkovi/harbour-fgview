@@ -104,13 +104,15 @@ Page {
                 if (rwys.length > 0) {
                     pageStack.push(Qt.resolvedUrl("RunwayPage.qml"), {
                         root: page.root, icao: modelData[0], name: modelData[1],
-                        lat: modelData[3], lon: modelData[4], runways: rwys })
+                        lat: modelData[3], lon: modelData[4], runways: rwys,
+                        elev: modelData.length > 6 ? modelData[6] : 0 })
                     return
                 }
                 if (page.root)
                     page.root.picked(modelData[0], modelData[1] + " (" + modelData[0] + ")",
                                      modelData.length > 4 ? modelData[3] : 0,
-                                     modelData.length > 4 ? modelData[4] : 0, "")
+                                     modelData.length > 4 ? modelData[4] : 0, "",
+                                     modelData.length > 6 ? modelData[6] : 0)
                 pageStack.pop(page.root, PageStackAction.Immediate)
                 pageStack.pop()
             }

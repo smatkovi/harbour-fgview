@@ -13,7 +13,7 @@ Page {
     // Emitted once an airport has been chosen, anywhere down the stack.
     // The pages below reach back up to here, so the caller only has to
     // connect to this one.
-    signal picked(string icao, string label, real lat, real lon, string runway)
+    signal picked(string icao, string label, real lat, real lon, string runway, real elev)
 
     readonly property string dataDir: "/usr/share/harbour-fgview/airports/"
 
