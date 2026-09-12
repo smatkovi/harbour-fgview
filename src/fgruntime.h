@@ -105,6 +105,11 @@ public:
         refreshAircraft();
         refreshScenarios();
 
+        _logFlush.setSingleShot(true);
+        connect(&_logFlush, &QTimer::timeout, this, [this]{
+            if (_logFile.isOpen()) _logFile.flush();
+        });
+
         _extractTick.setInterval(2000);
         connect(&_extractTick, &QTimer::timeout,
                 this, &FgRuntime::updateExtractProgress);
@@ -745,6 +750,14 @@ public slots:
                       engines); FlightGear refuses Nasal from sockets
                       without this. */
                    << "--allow-nasal-from-sockets"
+                   /* Warnings and worse, not every INFO line: a Nasal loop
+                      or a driver complaining once per state change turns
+                      the log into thousands of lines a second, and every
+                      one of them is formatted, written and read back here
+                      (Xperia 10 V: 53 MB in one flight, 1380 lines a
+                      second).  The settings page can put INFO back for
+                      diagnosis. */
+                   << "--log-level=warn"
                    << "--aircraft=" + aircraft
                    << "--airport=" + airport
                    /* No --timeofday here any more: the settings page sends
@@ -1009,14 +1022,29 @@ private slots:
         const QString chunk = QString::fromUtf8(_sim.readAllStandardOutput());
         if (chunk.isEmpty()) return;
 
-        /* alles mitschreiben, damit man nach einem Absturz nachsehen kann */
+        /* Mitschreiben, damit man nach einem Absturz nachsehen kann - aber
+           begrenzt und ohne Flush je Stueck: das lief im GUI-Faden, und
+           bei einer Log-Flut stand damit die Anzeige still, waehrend der
+           Simulator weiterlief. */
         if (!_logFile.isOpen()) {
             _logFile.setFileName(_root + "/fgfs.log");
             _logFile.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            _logBytes = 0;
+            _logCapped = false;
         }
-        if (_logFile.isOpen()) {
-            _logFile.write(chunk.toUtf8());
-            _logFile.flush();
+        if (_logFile.isOpen() && !_logCapped) {
+            const QByteArray raw = chunk.toUtf8();
+            _logFile.write(raw);
+            _logBytes += raw.size();
+            if (_logBytes > LOG_CAP_BYTES) {
+                _logFile.write("\n--- harbour-fgview: log capped at "
+                               + QByteArray::number(LOG_CAP_BYTES / (1024 * 1024))
+                               + " MB, the rest is only in ~/.fgfs/fgfs.log ---\n");
+                _logFile.flush();
+                _logCapped = true;
+            } else if (!_logFlush.isActive()) {
+                _logFlush.start(2000);
+            }
         }
 
         /* die letzten Zeilen fuer die Anzeige vorhalten */
@@ -1250,6 +1278,11 @@ private:
     QTimer _extractTick;
     QString _simLog;
     QFile _logFile;
+    /* the captured simulator output: bounded, and flushed on a timer */
+    static constexpr qint64 LOG_CAP_BYTES = 8 * 1024 * 1024;
+    qint64 _logBytes = 0;
+    bool _logCapped = false;
+    QTimer _logFlush;
     QNetworkAccessManager _nam;
     bool _resolving = false;
     int _progress = 0;

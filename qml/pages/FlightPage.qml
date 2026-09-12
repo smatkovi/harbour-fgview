@@ -323,6 +323,24 @@ Page {
         }
     }
 
+    // ---- Autopilot, bottom left -------------------------------------
+    // The throttle leaves this corner free (it keeps a margin of one small
+    // item top and bottom), and it is the one place on this page where a
+    // ninth control still fits.
+    FlatButton {
+        id: apButton
+        text: "AP"
+        width: throttleBox.width - 2 * Theme.paddingSmall
+        anchors {
+            left: parent.left
+            bottom: parent.bottom
+            leftMargin: Theme.paddingSmall
+            bottomMargin: Theme.paddingSmall
+        }
+        color: ctl.apOn ? Theme.highlightColor : Theme.primaryColor
+        onClicked: pageStack.push(Qt.resolvedUrl("AutopilotPage.qml"), { ctl: ctl })
+    }
+
     // ---- Rudder, horizontal along the bottom ------------------------
 
     Item {

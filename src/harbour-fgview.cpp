@@ -397,6 +397,20 @@ class ControlSender : public QObject
     Q_PROPERTY(bool paused READ paused NOTIFY changed)
     Q_PROPERTY(bool reversing READ reversing NOTIFY changed)
     Q_PROPERTY(qreal reverseDepth READ reverseDepth NOTIFY changed)
+    /* Autopilot: "" until the aircraft is known, then "generic" for
+       FlightGear's own autopilot or "a320" for the A320 family, which has
+       one of its own (it-autoflight) and ignores the generic properties. */
+    Q_PROPERTY(QString apKind READ apKind NOTIFY apChanged)
+    Q_PROPERTY(bool apOn READ apOn NOTIFY apChanged)
+    Q_PROPERTY(bool apAutothrustOn READ apAutothrustOn NOTIFY apChanged)
+    Q_PROPERTY(bool apHeadingOn READ apHeadingOn NOTIFY apChanged)
+    Q_PROPERTY(bool apAltitudeOn READ apAltitudeOn NOTIFY apChanged)
+    Q_PROPERTY(bool apVerticalSpeedOn READ apVerticalSpeedOn NOTIFY apChanged)
+    Q_PROPERTY(int apHeading READ apHeading NOTIFY apChanged)
+    Q_PROPERTY(int apAltitude READ apAltitude NOTIFY apChanged)
+    Q_PROPERTY(int apVerticalSpeed READ apVerticalSpeed NOTIFY apChanged)
+    Q_PROPERTY(int apSpeed READ apSpeed NOTIFY apChanged)
+    Q_PROPERTY(QString apModes READ apModes NOTIFY apChanged)
     Q_PROPERTY(qreal rudder   READ rudder   WRITE setRudder   NOTIFY changed)
     Q_PROPERTY(qreal flaps    READ flaps    WRITE setFlaps    NOTIFY changed)
     Q_PROPERTY(qreal brake    READ brake    WRITE setBrake    NOTIFY changed)
@@ -415,6 +429,9 @@ public:
         connect(&_tutorialPoll, &QTimer::timeout, this, &ControlSender::pollTutorial);
         /* coalesced view updates from a drag, see setViewOffsets() */
         _viewTimer.setSingleShot(true);
+        _apPoll.setInterval(1500);
+        connect(&_apPoll, &QTimer::timeout, this, &ControlSender::apPollState);
+
         _stowTimer.setSingleShot(true);
         connect(&_stowTimer, &QTimer::timeout, this, [this]{
             if (!_reversing) { _throttle = _throttleWanted; emit changed(); }
@@ -444,6 +461,17 @@ public:
     bool  paused() const { return _paused; }
     bool  reversing() const { return _reversing; }
     qreal reverseDepth() const { return _reverseDepth; }
+    QString apKind() const { return _apKind; }
+    bool apOn() const { return _apOn; }
+    bool apAutothrustOn() const { return _apAthr; }
+    bool apHeadingOn() const { return _apHeadingOn; }
+    bool apAltitudeOn() const { return _apAltitudeOn; }
+    bool apVerticalSpeedOn() const { return _apVsOn; }
+    int apHeading() const { return _apHeading; }
+    int apAltitude() const { return _apAltitude; }
+    int apVerticalSpeed() const { return _apVs; }
+    int apSpeed() const { return _apSpeed; }
+    QString apModes() const { return _apModes; }
 
     /* Right after the reversers were told to stow, forward thrust waits:
        the stow travels over telnet, which FlightGear polls at 5 Hz, while
@@ -515,12 +543,17 @@ public slots:
             "    foreach (var c; nasalN.getChildren()) {\n"
             "        var ns = c.getName();\n"
             "        if (contains(core, ns) or !contains(globals, ns) or typeof(globals[ns]) != \"hash\") continue;\n"
-            "        foreach (var fn; names)\n"
-            "            if (contains(globals[ns], fn) and typeof(globals[ns][fn]) == \"func\") {\n"
+            "        # by name, but case-insensitive: the Citation X calls its\n"
+            "        # procedure Startup, and Nasal is case-sensitive\n"
+            "        foreach (var k; keys(globals[ns])) {\n"
+            "            var lk = string.lc(k);\n"
+            "            foreach (var fn; names) {\n"
+            "                if (lk != fn or typeof(globals[ns][k]) != \"func\") continue;\n"
             "                var err = [];\n"
-            "                call(globals[ns][fn], [], nil, nil, err);\n"
-            "                if (size(err) == 0) return ns ~ \".\" ~ fn;\n"
+            "                call(globals[ns][k], [], nil, nil, err);\n"
+            "                if (size(err) == 0) return ns ~ \".\" ~ k;\n"
             "            }\n"
+            "        }\n"
             "    }\n"
             "    return \"\";\n"
             "};\n"
@@ -583,7 +616,11 @@ public slots:
             "    acconfig.taxi();\n"
             "} else {\n"
             "    var own = fgtouch_own([\"autostart\", \"startup\"]);\n"
-            "    if (own == \"\") fgtouch_generic();\n"
+            "    if (own == \"\") {\n"
+            "        # some aircraft only listen on the old convention property\n"
+            "        setprop(\"/sim/model/autostart\", 1);\n"
+            "        fgtouch_generic();\n"
+            "    }\n"
             "    setprop(\"/sim/fgtouch/start-procedure\", own == \"\" ? \"generic\" : own);\n"
             "}\n"));
 
@@ -636,6 +673,307 @@ public slots:
         _cranking = false;
         _engineOn = false;
         emit changed();
+    }
+
+    /* ---------------------------------------------------------- autopilot
+       Two autopilots, one panel.  FlightGear's own lives in
+       /autopilot/locks and /autopilot/settings and is what the c172p, the
+       Citation X and most aircraft use.  The A320 family brings its own
+       (it-autoflight) and ignores those properties entirely; there the
+       panel calls the aircraft's FCU exactly the way a click on its
+       flight control unit does - AP1, ATHR, the knobs pulled for a
+       selected value.  Which one applies is asked once per simulator run;
+       until the answer is in, apKind is empty and the page says so. */
+    void apWatch(bool on)
+    {
+        if (on) {
+            apProbe();
+            apPollState();
+            if (!_apPoll.isActive()) _apPoll.start(1500);
+        } else {
+            _apPoll.stop();
+        }
+    }
+
+    void apProbe()
+    {
+        if (!_apKind.isEmpty()) return;
+        /* "ls" lists the children; the A320's tree has input/ and output/
+           under it, a missing property only gives an empty answer. */
+        telnetQuery("ls /it-autoflight", [this](const QString& out){
+            _apKind = out.contains("input/") ? "a320" : "generic";
+            emit apChanged();
+            apPollState();
+        });
+    }
+
+    /* One read per tick, so the answers cannot overtake each other: the
+       state of the whole panel comes out of one ls. */
+    void apPollState()
+    {
+        if (_apKind == "a320") {
+            telnetQuery("ls /it-autoflight/input", [this](const QString& out){
+                const auto num = [&out](const char* name, int fallback){
+                    const QString v = propValue(out, name);
+                    bool ok = false;
+                    const double d = v.toDouble(&ok);
+                    return ok ? int(qRound(d)) : fallback;
+                };
+                _apOn = propValue(out, "ap1") == "1" || propValue(out, "ap1") == "true"
+                        || propValue(out, "ap2") == "1" || propValue(out, "ap2") == "true";
+                _apAthr = propValue(out, "athr") == "1" || propValue(out, "athr") == "true";
+                _apHeading = num("hdg", _apHeading);
+                _apAltitude = num("alt", _apAltitude);
+                _apVs = num("vs", _apVs);
+                _apSpeed = num("kts", _apSpeed);
+                emit apChanged();
+            });
+            telnetQuery("ls /it-autoflight/output", [this](const QString& out){
+                const QString lat = propValue(out, "lat"), vert = propValue(out, "vert");
+                static const char* latName[] = { "HDG", "NAV", "LOC", "HDG", "ALGN", "T/O", "GA", "RWY", "RWY TRK", "-" };
+                _apHeadingOn = !lat.isEmpty() && lat != "9";
+                _apAltitudeOn = vert == "1" || vert == "2";
+                _apVsOn = vert == "0";
+                const int l = lat.toInt();
+                _apModes = QString("%1 / %2")
+                           .arg(l >= 0 && l < 10 ? latName[l] : "-")
+                           .arg(vert.isEmpty() ? "-" : vert);
+                emit apChanged();
+            });
+            return;
+        }
+        telnetQuery("ls /autopilot/locks", [this](const QString& out){
+            const QString h = propValue(out, "heading"), a = propValue(out, "altitude"),
+                          sp = propValue(out, "speed");
+            _apHeadingOn = !h.isEmpty();
+            _apAltitudeOn = a == "altitude-hold" || a == "agl-hold" || a == "gs1-hold";
+            _apVsOn = a == "vertical-speed-hold";
+            _apAthr = sp.startsWith("speed-with-throttle") || sp.startsWith("mach-with-throttle");
+            _apOn = _apHeadingOn || !a.isEmpty() || !sp.isEmpty();
+            _apModes = QString("%1 / %2%3").arg(h.isEmpty() ? "-" : h)
+                       .arg(a.isEmpty() ? "-" : a)
+                       .arg(sp.isEmpty() ? "" : " / " + sp);
+            emit apChanged();
+        });
+        telnetQuery("ls /autopilot/settings", [this](const QString& out){
+            const auto num = [&out](const char* name, int fallback){
+                const QString v = propValue(out, name);
+                bool ok = false;
+                const double d = v.toDouble(&ok);
+                return ok ? int(qRound(d)) : fallback;
+            };
+            _apHeading = num("heading-bug-deg", _apHeading);
+            _apAltitude = num("target-altitude-ft", _apAltitude);
+            _apVs = num("vertical-speed-fpm", _apVs);
+            _apSpeed = num("target-speed-kt", _apSpeed);
+            emit apChanged();
+        });
+    }
+
+    /* master switch.  Generic: the locks are what makes it fly, so off
+       means clearing them; on restores the modes the panel shows. */
+    void apMaster(bool on)
+    {
+        if (_apKind == "a320") {
+            sendNasal(QByteArray("if (contains(globals, \"fcu\") and contains(fcu, \"FCUController\")) {\n"
+                                 "    var want = ") + (on ? "1" : "0") + QByteArray(";\n"
+                                 "    var have = getprop(\"/it-autoflight/output/ap1\") ? 1 : 0;\n"
+                                 "    if (want != have) fcu.FCUController.AP1();\n"
+                                 "}\n"));
+        } else if (on) {
+            apHeadingHold(true);
+            apAltitudeHold(_apVsOn ? false : true);
+        } else {
+            sendTelnet(QStringList()
+                       << "set /autopilot/locks/heading \"\""
+                       << "set /autopilot/locks/altitude \"\""
+                       << "set /autopilot/locks/speed \"\"");
+        }
+        _apOn = on;
+        emit apChanged();
+        QTimer::singleShot(600, this, &ControlSender::apPollState);
+    }
+
+    void apAutothrust(bool on)
+    {
+        if (_apKind == "a320") {
+            sendNasal(QByteArray("if (contains(globals, \"fcu\") and contains(fcu, \"FCUController\")) {\n"
+                                 "    var want = ") + (on ? "1" : "0") + QByteArray(";\n"
+                                 "    var have = getprop(\"/it-autoflight/output/athr\") ? 1 : 0;\n"
+                                 "    if (want != have) fcu.FCUController.ATHR();\n"
+                                 "}\n"));
+        } else {
+            sendTelnet(QStringList()
+                       << QString("set /autopilot/settings/target-speed-kt %1").arg(_apSpeed)
+                       << (on ? "set /autopilot/locks/speed \"speed-with-throttle\""
+                              : "set /autopilot/locks/speed \"\""));
+        }
+        _apAthr = on;
+        emit apChanged();
+        QTimer::singleShot(600, this, &ControlSender::apPollState);
+    }
+
+    void apSetHeading(int deg)
+    {
+        _apHeading = ((deg % 360) + 360) % 360;
+        if (_apKind == "a320")
+            sendTelnet(QStringList() << QString("set /it-autoflight/input/hdg %1").arg(_apHeading));
+        else
+            sendTelnet(QStringList() << QString("set /autopilot/settings/heading-bug-deg %1").arg(_apHeading));
+        emit apChanged();
+    }
+
+    void apHeadingHold(bool on)
+    {
+        if (_apKind == "a320") {
+            sendNasal(QByteArray("if (contains(globals, \"fcu\") and contains(fcu, \"FCUController\")) {\n"
+                                 "    fcu.FCUController.") + (on ? "HDGPull" : "HDGPush") + QByteArray("();\n}\n"));
+        } else {
+            sendTelnet(QStringList()
+                       << QString("set /autopilot/settings/heading-bug-deg %1").arg(_apHeading)
+                       << (on ? "set /autopilot/locks/heading \"dg-heading-hold\""
+                              : "set /autopilot/locks/heading \"\""));
+        }
+        _apHeadingOn = on;
+        emit apChanged();
+        QTimer::singleShot(600, this, &ControlSender::apPollState);
+    }
+
+    void apSetAltitude(int ft)
+    {
+        _apAltitude = qBound(0, ft, 45000);
+        if (_apKind == "a320")
+            sendTelnet(QStringList() << QString("set /it-autoflight/input/alt %1").arg(_apAltitude));
+        else
+            sendTelnet(QStringList() << QString("set /autopilot/settings/target-altitude-ft %1").arg(_apAltitude));
+        emit apChanged();
+    }
+
+    void apAltitudeHold(bool on)
+    {
+        if (_apKind == "a320") {
+            sendNasal(QByteArray("if (contains(globals, \"fcu\") and contains(fcu, \"FCUController\")) {\n"
+                                 "    fcu.FCUController.") + (on ? "ALTPull" : "ALTPush") + QByteArray("();\n}\n"));
+        } else {
+            sendTelnet(QStringList()
+                       << QString("set /autopilot/settings/target-altitude-ft %1").arg(_apAltitude)
+                       << (on ? "set /autopilot/locks/altitude \"altitude-hold\""
+                              : "set /autopilot/locks/altitude \"\""));
+        }
+        _apAltitudeOn = on;
+        if (on) _apVsOn = false;
+        emit apChanged();
+        QTimer::singleShot(600, this, &ControlSender::apPollState);
+    }
+
+    void apSetVerticalSpeed(int fpm)
+    {
+        _apVs = qBound(-6000, fpm, 6000);
+        if (_apKind == "a320")
+            sendTelnet(QStringList() << QString("set /it-autoflight/input/vs %1").arg(_apVs));
+        else
+            sendTelnet(QStringList() << QString("set /autopilot/settings/vertical-speed-fpm %1").arg(_apVs));
+        emit apChanged();
+    }
+
+    void apVerticalSpeedHold(bool on)
+    {
+        if (_apKind == "a320") {
+            sendNasal(QByteArray("if (contains(globals, \"fcu\") and contains(fcu, \"FCUController\")) {\n"
+                                 "    fcu.FCUController.") + (on ? "VSPull" : "VSPush") + QByteArray("();\n}\n"));
+        } else {
+            sendTelnet(QStringList()
+                       << QString("set /autopilot/settings/vertical-speed-fpm %1").arg(_apVs)
+                       << (on ? "set /autopilot/locks/altitude \"vertical-speed-hold\""
+                              : "set /autopilot/locks/altitude \"\""));
+        }
+        _apVsOn = on;
+        if (on) _apAltitudeOn = false;
+        emit apChanged();
+        QTimer::singleShot(600, this, &ControlSender::apPollState);
+    }
+
+    void apSetSpeed(int kt)
+    {
+        _apSpeed = qBound(0, kt, 400);
+        if (_apKind == "a320") {
+            sendTelnet(QStringList() << QString("set /it-autoflight/input/kts %1").arg(_apSpeed));
+        } else {
+            sendTelnet(QStringList() << QString("set /autopilot/settings/target-speed-kt %1").arg(_apSpeed));
+        }
+        emit apChanged();
+    }
+
+    void apSpeedHold(bool on)
+    {
+        if (_apKind == "a320") {
+            sendNasal(QByteArray("if (contains(globals, \"fcu\") and contains(fcu, \"FCUController\")) {\n"
+                                 "    fcu.FCUController.") + (on ? "SPDPull" : "SPDPush") + QByteArray("();\n}\n"));
+            emit apChanged();
+            QTimer::singleShot(600, this, &ControlSender::apPollState);
+            return;
+        }
+        apAutothrust(on);
+    }
+
+    /* Everything from where the aircraft is now: the usual first tap. */
+    void apHoldCurrent()
+    {
+        telnetQuery("ls /orientation", [this](const QString& o){
+            const int hdg = int(qRound(propValue(o, "heading-deg").toDouble()));
+            telnetQuery("ls /position", [this, hdg](const QString& p){
+                const int alt = int(qRound(propValue(p, "altitude-ft").toDouble()));
+                telnetQuery("ls /velocities", [this, hdg, alt](const QString& v){
+                    const int kt = int(qRound(propValue(v, "airspeed-kt").toDouble()));
+                    apSetHeading(hdg);
+                    apSetAltitude(((alt + 50) / 100) * 100);
+                    apSetSpeed(kt);
+                    apSetVerticalSpeed(0);
+                    if (_apKind == "a320") apMaster(true);
+                    apHeadingHold(true);
+                    apAltitudeHold(true);
+                });
+            });
+        });
+    }
+
+    /* Wings level: the simplest thing FlightGear's autopilot can do, and
+       the one worth having when it gets uncomfortable.  The A320 has no
+       such mode; there it is heading hold on the current heading. */
+    void apWingsLevel()
+    {
+        if (_apKind == "a320") {
+            telnetQuery("get /orientation/heading-deg", [this](const QString& o){
+                const auto m = QRegularExpression("'([0-9.eE+-]+)'").match(o);
+                if (m.hasMatch()) apSetHeading(int(qRound(m.captured(1).toDouble())));
+                apMaster(true);
+                apHeadingHold(true);
+            });
+            return;
+        }
+        sendTelnet(QStringList() << "set /autopilot/locks/heading \"wing-leveler\"");
+        _apHeadingOn = true;
+        emit apChanged();
+    }
+
+    /* Hand everything back.  The throttle stays where the autothrust left
+       it, so the aircraft does not drop its power the moment it is off. */
+    void apAllOff()
+    {
+        if (_apKind == "a320") {
+            sendNasal(QByteArray("if (contains(globals, \"fcu\") and contains(fcu, \"FCUController\")) {\n"
+                                 "    if (getprop(\"/it-autoflight/output/ap1\")) fcu.FCUController.AP1();\n"
+                                 "    if (getprop(\"/it-autoflight/output/athr\")) fcu.FCUController.ATHR();\n"
+                                 "}\n"));
+        } else {
+            sendTelnet(QStringList()
+                       << "set /autopilot/locks/heading \"\""
+                       << "set /autopilot/locks/altitude \"\""
+                       << "set /autopilot/locks/speed \"\"");
+        }
+        _apOn = _apAthr = _apHeadingOn = _apAltitudeOn = _apVsOn = false;
+        emit apChanged();
+        QTimer::singleShot(600, this, &ControlSender::apPollState);
     }
 
     /* Reverse thrust, from the throttle held below zero.  Switched on
@@ -729,6 +1067,91 @@ public slots:
         emit changed();
     }
 
+    /* Engines that have to come up while the aircraft is already flying.
+       The procedure for the ground is wrong here: the A320's begins cold
+       and dark, sets the parking brake and takes half a minute over APU
+       and bleed air, and on an approach it never got there - the engines
+       stayed off (the user's report).  What works in the air:
+
+       * the A320 family starts its engines instantly when its own
+         auto-config flag is set and the engine masters go in, which is
+         exactly what its ground procedure does internally
+         (engines-cfm.nas: cutoff-switch -> fast_start_one);
+       * an aircraft with its own autostart/startup procedure gets that -
+         those set switches, not sequences;
+       * everything else: JSBSim starts every engine at once through
+         propulsion/set-running, and the piston items are set for the
+         engine models that need them. */
+    void startEngineInFlight()
+    {
+        sendNasal(QByteArray(
+            "var core = {tutorial:1, local_weather:1, jetways:1, jetways_edit:1, FailureMgr:1,\n"
+            "            canvas:1, console:1, debug:1, input_helpers:1, performance_monitor:1,\n"
+            "            std:1, towing:1, Autopush:1, modules:1};\n"
+            "var fgtouch_own = func(names) {\n"
+            "    var nasalN = props.globals.getNode(\"/nasal\");\n"
+            "    if (nasalN == nil) return \"\";\n"
+            "    foreach (var c; nasalN.getChildren()) {\n"
+            "        var ns = c.getName();\n"
+            "        if (contains(core, ns) or !contains(globals, ns) or typeof(globals[ns]) != \"hash\") continue;\n"
+            "        foreach (var k; keys(globals[ns])) {\n"
+            "            var lk = string.lc(k);\n"
+            "            foreach (var fn; names) {\n"
+            "                if (lk != fn or typeof(globals[ns][k]) != \"func\") continue;\n"
+            "                var err = [];\n"
+            "                call(globals[ns][k], [], nil, nil, err);\n"
+            "                if (size(err) == 0) return ns ~ \".\" ~ k;\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "    return \"\";\n"
+            "};\n"
+            "var n = 0;\n"
+            "for (var i = 0; i < 8; i += 1)\n"
+            "    if (getprop(\"/engines/engine[\" ~ i ~ \"]/running\") != nil) n = i + 1;\n"
+            "if (n < 1) n = 1;\n"
+            "var how = \"generic\";\n"
+            "if (contains(globals, \"systems\") and contains(systems, \"fast_start_one\")) {\n"
+            "    # A320 family: the flag its own auto-config sets is what turns\n"
+            "    # the engine masters into an instant start instead of the\n"
+            "    # ground sequence\n"
+            "    setprop(\"/controls/electrical/switches/bat-1\", 1);\n"
+            "    setprop(\"/controls/electrical/switches/bat-2\", 1);\n"
+            "    setprop(\"/controls/engines/engine-start-switch\", 1);\n"
+            "    setprop(\"/systems/acconfig/autoconfig-running\", 1);\n"
+            "    setprop(\"/controls/engines/engine[0]/cutoff-switch\", 0);\n"
+            "    setprop(\"/controls/engines/engine[1]/cutoff-switch\", 0);\n"
+            "    settimer(func { setprop(\"/systems/acconfig/autoconfig-running\", 0); }, 3);\n"
+            "    how = \"a320-fast-start\";\n"
+            "} else {\n"
+            "    var own = fgtouch_own([\"autostart\", \"startup\"]);\n"
+            "    if (own != \"\") {\n"
+            "        how = own;\n"
+            "    } else {\n"
+            "        setprop(\"/sim/model/autostart\", 1);\n"
+            "        for (var i = 0; i < n; i += 1) {\n"
+            "            var e = \"/controls/engines/engine[\" ~ i ~ \"]/\";\n"
+            "            setprop(e ~ \"cutoff\", 0);\n"
+            "            setprop(e ~ \"magnetos\", 3);\n"
+            "            setprop(e ~ \"mixture\", 1.0);\n"
+            "            setprop(e ~ \"fuel-pump\", 1);\n"
+            "            setprop(e ~ \"starter\", 0);\n"
+            "        }\n"
+            "        setprop(\"/controls/switches/master-bat\", 1);\n"
+            "        setprop(\"/controls/switches/master-alt\", 1);\n"
+            "        setprop(\"/controls/switches/master-avionics\", 1);\n"
+            "        setprop(\"/controls/switches/magnetos\", 3);\n"
+            "        # JSBSim: all engines at once, no cranking in the air\n"
+            "        setprop(\"/fdm/jsbsim/propulsion/set-running\", -1);\n"
+            "        for (var i = 0; i < n; i += 1)\n"
+            "            setprop(\"/engines/engine[\" ~ i ~ \"]/running\", 1);\n"
+            "    }\n"
+            "}\n"
+            "setprop(\"/sim/fgtouch/start-procedure-air\", how);\n"));
+        _engineOn = true;
+        emit changed();
+    }
+
     /* A start in the air or on final approach wants running engines.
        JSBSim starts them with /sim/presets/running, YASim jets and turbines
        run anyway, a YASim piston engine does not - so once the scenery is
@@ -775,7 +1198,7 @@ public slots:
                         });
                         return;
                     }
-                    startEngine();
+                    startEngineInFlight();
                     if (_flightThrottle > 0) {
                         _throttle = clamp01(_flightThrottle);
                         emit changed();
@@ -1199,6 +1622,7 @@ private:
 
 signals:
     void changed();
+    void apChanged();
     void tutorialsChanged();
     void tutorialChanged();
 
@@ -1226,6 +1650,12 @@ private:
     bool    _paused = false;
     bool    _reversing = false;
     qreal   _reverseDepth = 0.0;
+    /* autopilot state, read back from the simulator */
+    QString _apKind, _apModes;
+    bool _apOn = false, _apAthr = false;
+    bool _apHeadingOn = false, _apAltitudeOn = false, _apVsOn = false;
+    int _apHeading = 0, _apAltitude = 5000, _apVs = 0, _apSpeed = 120;
+    QTimer _apPoll;
     enum { ReverseUnknown, ReverseGeneric, ReverseAircraft } _reverseMode = ReverseUnknown;
     QElapsedTimer _loadWaitStarted;
     qreal _flightThrottle = 0.0;

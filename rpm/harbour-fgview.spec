@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.11.3
+Version:    0.12.0
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,41 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Sep 12 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.12.0-1
+- An autopilot panel, from the AP button in the bottom left corner of the
+  flight page: master and autothrust, hold speed, heading, altitude or
+  vertical speed, each with its value on two step sizes, "Hold this" for
+  the current heading, altitude and speed in one tap, wings level, and all
+  off. Two autopilots are driven behind it: FlightGear's own for the c172p,
+  the Citation X and most aircraft, and the A320 family's own flight
+  control unit (it-autoflight, which ignores FlightGear's properties) -
+  there the panel pulls the FCU knobs the way a click on them would. The
+  page shows which of the two it found and what the simulator reports as
+  active.
+
+* Sat Sep 12 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.5-1
+- Engines that have to come up in the air get their own procedure. The one
+  for the ground was used, and the A320's begins cold and dark with the
+  parking brake set and half a minute of APU and bleed air - on an approach
+  it never finished and the engines stayed off. In the air the A320 family
+  now gets the instant start its own auto-config uses, an aircraft with its
+  own autostart or startup procedure gets that, and everything else has
+  JSBSim start every engine at once instead of cranking starters.
+
+* Sat Sep 12 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.4-1
+- Aircraft whose start-up procedure is spelled with capitals are found too.
+  The Citation X calls its procedure Startup, so it never ran: avionics and
+  generators stayed off and the displays stayed dark while the engines ran.
+  The search is case-insensitive now, and aircraft that only listen on the
+  old /sim/model/autostart property are triggered through it.
+- The simulator's output no longer stalls the interface. It was written to
+  fgfs.log and flushed for every chunk in the GUI thread; a Nasal loop or a
+  driver warning can produce a thousand lines a second (measured on the
+  Xperia 10 V: 53 MB in one flight), and the picture froze while the
+  simulator kept running. The capture is flushed every two seconds, stops
+  at 8 MB, and FlightGear itself is asked for warnings instead of every
+  INFO line. Its own log in ~/.fgfs/fgfs.log keeps the full detail.
+
 * Fri Sep 11 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.11.3-1
 - A start in the air is 3000 ft above the airport, not above the sea. At
   airports higher than that (Denver, La Paz) the aircraft stood on the
