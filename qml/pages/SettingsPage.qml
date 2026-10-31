@@ -34,7 +34,12 @@ Page {
         pauseInBackground: true, // freeze the simulation while the app is not on screen
         sceneryRefresh: false,   // check offline, fetch only what is missing
         sceneryInFlight: false,  // FlightGear's TerraSync: tiles around the aircraft
-        realWeather:  false      // METAR from the net; needs a connection in flight
+        realWeather:  false,     // METAR from the net; needs a connection in flight
+        windSet:      false,     // FlightGear's own: 3 kt from 270 on the ground, more aloft
+        windSpeed:    10,
+        windFrom:     270,
+        tiltSens:     0.65,      // aileron: 54 deg of lean for full travel
+        tiltExpo:     0.6        // aileron: how soft the middle of the travel is
     })
 
     ConfigurationGroup {
@@ -56,6 +61,11 @@ Page {
         property bool sceneryRefresh: false
         property bool sceneryInFlight: false
         property bool realWeather: false
+        property bool windSet: false
+        property int  windSpeed: 10
+        property int  windFrom: 270
+        property real tiltSens: 0.65
+        property real tiltExpo: 0.6
         property bool pauseInBackground: true
     }
 
@@ -69,6 +79,8 @@ Page {
         cfg.pauseInBackground = d.pauseInBackground
         cfg.sceneryInFlight = d.sceneryInFlight
         cfg.realWeather = d.realWeather
+        cfg.windSet = d.windSet;         cfg.windSpeed = d.windSpeed
+        cfg.windFrom = d.windFrom
         cfg.detailRange = d.detailRange; cfg.visibility = d.visibility
         cfg.filtering = d.filtering;     cfg.clouds = d.clouds
         cfg.timeOfDay = d.timeOfDay;     cfg.trafficLevel = d.trafficLevel
@@ -78,10 +90,15 @@ Page {
 
         treeSlider.value        = d.vegetation
 
+        tiltSensSlider.value = d.tiltSens
+        tiltExpoSlider.value = d.tiltExpo
         sceneryRefreshSwitch.checked = d.sceneryRefresh
         pauseSwitch.checked = d.pauseInBackground
         sceneryInFlightSwitch.checked = d.sceneryInFlight
         realWeatherSwitch.checked = d.realWeather
+        windSwitch.checked = d.windSet
+        windSpeedSlider.value = d.windSpeed
+        windFromSlider.value = d.windFrom
         buildingSwitch.checked  = d.buildings
         rangeSlider.value       = d.detailRange
         visBox.currentIndex     = d.visibility
@@ -130,6 +147,39 @@ Page {
                 wrapMode: Text.WordWrap; font.pixelSize: Theme.fontSizeExtraSmall
                 color: Theme.secondaryColor
                 text: qsTr("In flight, holding “View” opens the lessons: FlightGear's step-by-step tutorials for the aircraft, if it has any. The c172p brings fourteen.")
+            }
+
+            SectionHeader { text: qsTr("Tilt control: aileron") }
+
+            Slider {
+                id: tiltSensSlider
+                width: parent.width
+                label: qsTr("Sensitivity")
+                minimumValue: 0.4; maximumValue: 2.0; stepSize: 0.1
+                value: cfg.tiltSens
+                valueText: Math.round(value * 100) + " % · " + Math.round(35 / value) + "°"
+                onReleased: cfg.tiltSens = value
+            }
+            Slider {
+                id: tiltExpoSlider
+                width: parent.width
+                label: qsTr("Soft middle")
+                minimumValue: 0.0; maximumValue: 0.9; stepSize: 0.05
+                value: cfg.tiltExpo
+                valueText: Math.round(value * 100) + " %"
+                onReleased: cfg.tiltExpo = value
+            }
+            Label {
+                x: Theme.horizontalPageMargin; width: parent.width - 2 * x
+                wrapMode: Text.WordWrap; font.pixelSize: Theme.fontSizeExtraSmall
+                color: Theme.secondaryColor
+                text: qsTr("How far the phone has to lean for full aileron. A bird's "
+                           + "aileron is a twist of the whole wing, not a flap on it, so "
+                           + "it rolls far harder than an aircraft: the default 65 % asks "
+                           + "for 54° of lean instead of 35°. The soft middle keeps full "
+                           + "travel at the edges and flattens the response around the "
+                           + "centre. The elevator is not affected - its 18° were set "
+                           + "deliberately, because 30° reacted too weakly.")
             }
 
             SectionHeader { text: qsTr("Scenery") }
@@ -234,6 +284,43 @@ Page {
                 description: qsTr("Fetches the current METAR for the area at start and keeps updating it in flight, so wind, clouds, visibility and pressure are what the nearest station reports. Needs a network connection while flying; a visibility set below overrides it.")
                 checked: cfg.realWeather
                 onCheckedChanged: cfg.realWeather = checked
+            }
+
+            // Without real weather the wind is FlightGear's default, a light
+            // breeze from the west that grows with height - or this.
+            TextSwitch {
+                id: windSwitch
+                enabled: !cfg.realWeather
+                text: qsTr("Set the wind")
+                description: cfg.realWeather
+                             ? qsTr("Real weather brings its own wind.")
+                             : qsTr("Off, FlightGear's default: 3 kt from the west on the ground, stronger higher up. On, the wind below at every height. With the runway on automatic, FlightGear lines up into it.")
+                checked: cfg.windSet
+                onCheckedChanged: cfg.windSet = checked
+            }
+
+            Slider {
+                id: windSpeedSlider
+                width: parent.width
+                enabled: cfg.windSet && !cfg.realWeather
+                opacity: enabled ? 1.0 : Theme.opacityLow
+                label: qsTr("Wind speed")
+                minimumValue: 0; maximumValue: 50; stepSize: 1
+                value: cfg.windSpeed
+                valueText: value === 0 ? qsTr("calm") : value + " kt"
+                onReleased: cfg.windSpeed = value
+            }
+
+            Slider {
+                id: windFromSlider
+                width: parent.width
+                enabled: cfg.windSet && !cfg.realWeather && cfg.windSpeed > 0
+                opacity: enabled ? 1.0 : Theme.opacityLow
+                label: qsTr("Wind from")
+                minimumValue: 0; maximumValue: 350; stepSize: 10
+                value: cfg.windFrom
+                valueText: value + "°"
+                onReleased: cfg.windFrom = value
             }
 
             ComboBox {

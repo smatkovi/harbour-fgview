@@ -6,50 +6,28 @@ import Sailfish.Silica 1.0
 // the A320 family's, which ignores FlightGear's properties and is driven
 // through its own flight control unit.  ControlSender decides which, this
 // page only shows what is there.
+//
+// The map sits on the left, the panel on the right: the page is landscape,
+// like the cockpit it comes from.
 Page {
     id: page
 
     property var ctl                       // ControlSender
 
-    // A value with two step sizes, which is what a knob on a real panel is
-    Component {
-        id: valueRow
-        Row {
-            property string title
-            property int value
-            property int small: 1
-            property int large: 10
-            property string unit
-            property var apply                  // function(v)
-            width: parent ? parent.width : 0
-            spacing: Theme.paddingSmall
-
-            Label {
-                width: parent.width * 0.32
-                anchors.verticalCenter: parent.verticalCenter
-                text: title
-                color: Theme.highlightColor
-                font.pixelSize: Theme.fontSizeSmall
-            }
-            FlatButton { text: "−" + large; onClicked: apply(value - large) }
-            FlatButton { text: "−" + small; onClicked: apply(value - small) }
-            Label {
-                width: parent.width * 0.2
-                anchors.verticalCenter: parent.verticalCenter
-                horizontalAlignment: Text.AlignHCenter
-                text: value + " " + unit
-                font.pixelSize: Theme.fontSizeSmall
-            }
-            FlatButton { text: "+" + small; onClicked: apply(value + small) }
-            FlatButton { text: "+" + large; onClicked: apply(value + large) }
-        }
-    }
-
+    // polls the autopilot state and the position for the map
     Component.onCompleted: if (ctl) ctl.apWatch(true)
     Component.onDestruction: if (ctl) ctl.apWatch(false)
 
+    MapView {
+        id: map
+        ctl: page.ctl
+        anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+        width: Math.min(parent.height, parent.width * 0.5)
+    }
+
     SilicaFlickable {
-        anchors.fill: parent
+        anchors { left: map.right; right: parent.right; top: parent.top; bottom: parent.bottom }
+        clip: true
         contentHeight: col.height + Theme.paddingLarge
 
         Column {
@@ -110,18 +88,15 @@ Page {
             }
 
             SectionHeader { text: qsTr("Speed") }
-            Loader {
+            ApValueRow {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
-                sourceComponent: valueRow
-                onLoaded: {
-                    item.title = qsTr("Speed")
-                    item.unit = "kt"
-                    item.small = 1
-                    item.large = 10
-                    item.apply = function(v) { ctl.apSetSpeed(v) }
-                }
-                Binding { target: item; property: "value"; value: ctl ? ctl.apSpeed : 0 }
+                title: qsTr("Speed")
+                unit: "kt"
+                small: 1
+                large: 10
+                value: ctl ? ctl.apSpeed : 0
+                onChangeTo: ctl.apSetSpeed(v)
             }
 
             SectionHeader { text: qsTr("Heading") }
@@ -130,18 +105,15 @@ Page {
                 checked: ctl ? ctl.apHeadingOn : false
                 onClicked: ctl.apHeadingHold(checked)
             }
-            Loader {
+            ApValueRow {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
-                sourceComponent: valueRow
-                onLoaded: {
-                    item.title = qsTr("Heading")
-                    item.unit = "°"
-                    item.small = 1
-                    item.large = 10
-                    item.apply = function(v) { ctl.apSetHeading(v) }
-                }
-                Binding { target: item; property: "value"; value: ctl ? ctl.apHeading : 0 }
+                title: qsTr("Heading")
+                unit: "°"
+                small: 1
+                large: 10
+                value: ctl ? ctl.apHeading : 0
+                onChangeTo: ctl.apSetHeading(v)
             }
 
             SectionHeader { text: qsTr("Altitude") }
@@ -150,18 +122,15 @@ Page {
                 checked: ctl ? ctl.apAltitudeOn : false
                 onClicked: ctl.apAltitudeHold(checked)
             }
-            Loader {
+            ApValueRow {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
-                sourceComponent: valueRow
-                onLoaded: {
-                    item.title = qsTr("Altitude")
-                    item.unit = "ft"
-                    item.small = 100
-                    item.large = 1000
-                    item.apply = function(v) { ctl.apSetAltitude(v) }
-                }
-                Binding { target: item; property: "value"; value: ctl ? ctl.apAltitude : 0 }
+                title: qsTr("Altitude")
+                unit: "ft"
+                small: 100
+                large: 1000
+                value: ctl ? ctl.apAltitude : 0
+                onChangeTo: ctl.apSetAltitude(v)
             }
 
             SectionHeader { text: qsTr("Climb and descent") }
@@ -171,18 +140,15 @@ Page {
                 checked: ctl ? ctl.apVerticalSpeedOn : false
                 onClicked: ctl.apVerticalSpeedHold(checked)
             }
-            Loader {
+            ApValueRow {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
-                sourceComponent: valueRow
-                onLoaded: {
-                    item.title = qsTr("Vertical speed")
-                    item.unit = "fpm"
-                    item.small = 100
-                    item.large = 500
-                    item.apply = function(v) { ctl.apSetVerticalSpeed(v) }
-                }
-                Binding { target: item; property: "value"; value: ctl ? ctl.apVerticalSpeed : 0 }
+                title: qsTr("Vertical speed")
+                unit: "fpm"
+                small: 100
+                large: 500
+                value: ctl ? ctl.apVerticalSpeed : 0
+                onChangeTo: ctl.apSetVerticalSpeed(v)
             }
         }
 

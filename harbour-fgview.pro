@@ -20,6 +20,9 @@ DISTFILES += \
     qml/pages/AirportSizePage.qml \
     qml/pages/AirportListPage.qml \
     qml/pages/AircraftPage.qml \
+    qml/pages/AutopilotPage.qml \
+    qml/pages/ApValueRow.qml \
+    qml/pages/MapView.qml \
     qml/pages/HangarPage.qml \
     rpm/harbour-fgview.spec \
     harbour-fgview.desktop

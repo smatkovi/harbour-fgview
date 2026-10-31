@@ -85,7 +85,10 @@ Page {
                     right: parent.right; rightMargin: Theme.horizontalPageMargin
                     verticalCenter: parent.verticalCenter
                 }
+                // large / small / airfields; an index from before the
+                // airfields had their own list has no third number
                 text: modelData.large + " / " + modelData.small
+                      + (modelData.field !== undefined ? " / " + modelData.field : "")
                 color: Theme.secondaryColor
                 font.pixelSize: Theme.fontSizeExtraSmall
             }
@@ -96,7 +99,8 @@ Page {
                     countryName: modelData.name,
                     file: page.dataDir + modelData.file,
                     largeCount: modelData.large,
-                    smallCount: modelData.small
+                    smallCount: modelData.small,
+                    fieldCount: modelData.field || 0
                 })
             }
         }

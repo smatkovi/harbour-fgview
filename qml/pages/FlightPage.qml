@@ -28,14 +28,47 @@ Page {
         property int  startMode: 0
         property string aircraftKind: "piston"
         property string scenarioCarrier: ""
+        property real tiltSens: 0.65
+        property real tiltExpo: 0.6
     }
+
+    // The tilt control, from the settings page.
+    Binding { target: ctl; property: "tiltSens"; value: cfg.tiltSens }
+    Binding { target: ctl; property: "tiltExpo"; value: cfg.tiltExpo }
 
     // Started in the air or on final approach: engines have to run.  The
     // sender waits for the scenery and starts only what is not running.
     // On final, approach power for the kind of aircraft; in level flight,
     // whatever the trim found.  Not on a carrier deck, which is a ground start.
+    // Jets and turboprops have reversers; for everything else the bottom of
+    // the throttle is the spoilers alone.  Unknown kinds keep the reversers,
+    // as before there was a choice.
+    Binding {
+        target: ctl
+        property: "reverseThrust"
+        value: ["", "jet", "turboprop"].indexOf(cfg.aircraftKind) >= 0
+    }
+
+    // Birds: the start button becomes the take-off, and the sender polls
+    // their feet to tell whether they are airborne.
+    Binding {
+        target: ctl
+        property: "aircraftKind"
+        value: cfg.aircraftKind
+    }
+
+    // The parking brake is the aircraft's, and some set or release it
+    // themselves (the A320 starts with it on): read it back now and then.
+    Timer {
+        interval: 2000; running: page.appActive; repeat: true
+        onTriggered: ctl.pollParkingBrake()
+    }
+
     Component.onCompleted: {
         if (cfg.startMode === 0 || cfg.scenarioCarrier !== "") return
+        // A bird has no engines to start, in the air no less than on the
+        // ground: its throttle is the strength of its wingbeat.
+        if (cfg.aircraftKind === "bird") return
         var approach = { piston: 0.35, turboprop: 0.45, jet: 0.55 }
         ctl.startEngineWhenLoaded(cfg.startMode === 2 ? (approach[cfg.aircraftKind] || 0) : 0)
     }
@@ -240,8 +273,11 @@ Page {
             border.width: 1
 
             // Reverse zone: the bottom part of the bar.  Held there, the
-            // reversers deploy and the depth is the reverse thrust; let go
-            // or move back up and they stow with the throttle at idle.
+            // reversers deploy with the spoilers and the depth is the reverse
+            // thrust; let go or move back up and they stow with the throttle
+            // at idle.  Without reversers to deploy (none on this aircraft,
+            // or still in the air) it is the spoilers alone, and the depth is
+            // how far they extend.
             readonly property real revZone: 0.18
 
             Rectangle {
@@ -254,7 +290,8 @@ Page {
                 border.width: 1
                 Label {
                     anchors.centerIn: parent
-                    text: "REV"
+                    text: ctl.reversing ? (ctl.reverseMode === "spoilers" ? "SPLR" : "REV")
+                                        : (ctl.reverseThrust ? "REV" : "SPLR")
                     color: Theme.rgba("#ff5030", 0.9)
                     font.pixelSize: Theme.fontSizeTiny
                 }
@@ -280,7 +317,8 @@ Page {
 
             Label {
                 anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.top }
-                text: ctl.reversing ? "REV " + Math.round(ctl.reverseDepth * 100) + "%"
+                text: ctl.reversing ? (ctl.reverseMode === "spoilers" ? "SPLR " : "REV ")
+                                      + Math.round(ctl.reverseDepth * 100) + "%"
                                     : Math.round(ctl.throttle * 100) + "%"
                 color: ctl.reversing ? "#ff5030" : Theme.highlightColor
                 font.pixelSize: Theme.fontSizeExtraSmall
@@ -480,11 +518,28 @@ Page {
 
         FlatButton {
             width: parent.width
-            text: ctl.cranking ? qsTr("Cranking...")
-                               : (ctl.engineOn ? qsTr("Engine off") : qsTr("Engine on"))
-            color: ctl.engineOn ? Theme.highlightColor : Theme.primaryColor
-            enabled: !ctl.cranking
-            onClicked: ctl.engineOn ? ctl.stopEngine() : ctl.startEngine()
+            // A bird takes off instead of starting an engine: one tap runs
+            // or jumps, a tap while it is running lets go of the launch.
+            text: cfg.aircraftKind === "bird"
+                  ? (ctl.cranking ? qsTr("Launching...")
+                                  : (ctl.birdAirborne ? qsTr("Airborne") : qsTr("Take off")))
+                  : (ctl.cranking ? qsTr("Cranking...")
+                                  : (ctl.engineOn ? qsTr("Engine off") : qsTr("Engine on")))
+            color: (cfg.aircraftKind === "bird" ? ctl.birdAirborne : ctl.engineOn)
+                   ? Theme.highlightColor : Theme.primaryColor
+            // While a bird is launching the button stays live: it is the way
+            // to stop the run again.
+            enabled: cfg.aircraftKind === "bird" || !ctl.cranking
+            onClicked: {
+                if (cfg.aircraftKind === "bird") {
+                    if (ctl.cranking) ctl.stopEngine()
+                    else ctl.startEngine()
+                } else if (ctl.engineOn) {
+                    ctl.stopEngine()
+                } else {
+                    ctl.startEngine()
+                }
+            }
         }
 
         FlatButton {
@@ -529,11 +584,16 @@ Page {
             onPressAndHold: ctl.flaps = 0.0   // fully up in one go
         }
 
+        // Held: the wheel brakes, for as long as the finger stays.  Held
+        // longer: the parking brake as well, which stays on after letting go
+        // - and a second long press releases it.
         FlatButton {
             width: parent.width
-            text: qsTr("Brake")
-            down: ctl.brake > 0.5
+            text: ctl.parkingBrake ? qsTr("Parking brake") : qsTr("Brake")
+            color: ctl.parkingBrake ? Theme.highlightColor : Theme.primaryColor
+            down: ctl.brake > 0.5 || ctl.parkingBrake
             onPressedChanged: ctl.brake = pressed ? 1.0 : 0.0
+            onPressAndHold: ctl.setParkingBrake(!ctl.parkingBrake)
         }
     }
 }

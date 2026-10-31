@@ -342,7 +342,16 @@ public slots:
                 auto tm = QRegularExpression("<tag>\\s*([^<\\s]+)\\s*</tag>").globalMatch(text);
                 while (tm.hasNext()) tags << tm.next().captured(1).toLower();
                 QString kind;
-                if (tags.contains("helicopter")) kind = "helicopter";
+                /* Birds before everything else: the bird-flight aircraft
+                   carry <tag>glider</tag> as well - they do glide - and the
+                   glider rule would otherwise win, with the engine start-up
+                   procedure running on an aircraft that has no engines at
+                   all.  Nasal/bird.nas is the fallback for one whose tags
+                   were written by hand. */
+                if (tags.contains("bird") || tags.contains("ornithopter")
+                    || QFile::exists(QFileInfo(path).absolutePath()
+                                     + "/Nasal/bird.nas")) kind = "bird";
+                else if (tags.contains("helicopter")) kind = "helicopter";
                 else if (tags.contains("glider")) kind = "glider";
                 else if (tags.contains("jet")) kind = "jet";
                 else if (tags.contains("turboprop")) kind = "turboprop";
@@ -645,6 +654,14 @@ public slots:
                 "<chunk><name>gear</name><node>/controls/gear/gear-down</node><type>bool</type></chunk>\n"
                 "<!-- current-engine is what the cockpit lever's animation reads -->\n"
                 "<chunk><name>throttle-lever</name><node>/controls/engines/current-engine/throttle</node><type>float</type></chunk>\n"
+                "<!-- Flapping wings: the bird-flight aircraft copy the\n"
+                "     throttle to this property in their own Nasal, but\n"
+                "     FlightGear 2020.3 cannot add a listener to the tied\n"
+                "     throttle property, so the copy never happened and the\n"
+                "     wings stayed still.  It is made here instead.  An\n"
+                "     aircraft without the property only gets an unused node\n"
+                "     under /fdm/jsbsim/fcs. -->\n"
+                "<chunk><name>flapping</name><node>/fdm/jsbsim/fcs/flapping-cmd-norm</node><type>float</type></chunk>\n"
                 "</input></generic></PropertyList>\n";
             QDir().mkpath(fgRoot() + "/Protocol");
             QFile f(fgRoot() + "/Protocol/fgtouch.xml");

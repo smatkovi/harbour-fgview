@@ -397,6 +397,23 @@ class ControlSender : public QObject
     Q_PROPERTY(bool paused READ paused NOTIFY changed)
     Q_PROPERTY(bool reversing READ reversing NOTIFY changed)
     Q_PROPERTY(qreal reverseDepth READ reverseDepth NOTIFY changed)
+    /* Whether the loaded kind of aircraft has thrust reversers at all (set
+       by the flight page from the aircraft's tags).  Without, the bottom of
+       the throttle only works the spoilers. */
+    Q_PROPERTY(bool reverseThrust READ reverseThrust WRITE setReverseThrust NOTIFY changed)
+    /* What the bottom of the throttle is doing right now: "aircraft" or
+       "generic" reversers, "spoilers" only, "" while unknown */
+    Q_PROPERTY(QString reverseMode READ reverseModeName NOTIFY changed)
+    Q_PROPERTY(bool parkingBrake READ parkingBrake NOTIFY changed)
+    /* Where the aircraft is, for the map; read while the autopilot page is
+       open.  Heading true, magnetic variation east positive. */
+    Q_PROPERTY(bool posValid READ posValid NOTIFY positionChanged)
+    Q_PROPERTY(double posLat READ posLat NOTIFY positionChanged)
+    Q_PROPERTY(double posLon READ posLon NOTIFY positionChanged)
+    Q_PROPERTY(double posHeading READ posHeading NOTIFY positionChanged)
+    Q_PROPERTY(double posAltitude READ posAltitude NOTIFY positionChanged)
+    Q_PROPERTY(double posGroundSpeed READ posGroundSpeed NOTIFY positionChanged)
+    Q_PROPERTY(double posMagVar READ posMagVar NOTIFY positionChanged)
     /* Autopilot: "" until the aircraft is known, then "generic" for
        FlightGear's own autopilot or "a320" for the A320 family, which has
        one of its own (it-autoflight) and ignores the generic properties. */
@@ -418,8 +435,17 @@ class ControlSender : public QObject
     Q_PROPERTY(qreal aileron  READ aileron  NOTIFY changed)
     Q_PROPERTY(qreal elevator READ elevator NOTIFY changed)
     Q_PROPERTY(bool  tiltActive READ tiltActive WRITE setTiltActive NOTIFY changed)
+    /* How far the phone leans for full deflection, and how soft the middle
+       is.  A bird rolls on wing twist and needs a gentler hand than an
+       aircraft; rather than a new constant, both are settings. */
+    Q_PROPERTY(qreal tiltSens READ tiltSens WRITE setTiltSens NOTIFY changed)
+    Q_PROPERTY(qreal tiltExpo READ tiltExpo WRITE setTiltExpo NOTIFY changed)
     Q_PROPERTY(bool  cranking   READ cranking   NOTIFY changed)
     Q_PROPERTY(bool  engineOn   READ engineOn   NOTIFY changed)
+    /* Birds (bird-flight): the kind comes from the aircraft's tags and
+       decides what the start button does; airborne is what their feet say. */
+    Q_PROPERTY(QString aircraftKind READ aircraftKind WRITE setAircraftKind NOTIFY changed)
+    Q_PROPERTY(bool  birdAirborne READ birdAirborne NOTIFY changed)
 
 public:
     explicit ControlSender(QObject* parent = nullptr) : QObject(parent)
@@ -440,6 +466,8 @@ public:
         _accel.setDataRate(50);
         _accel.start();
 
+        connect(&_birdTimer, &QTimer::timeout, this, &ControlSender::pollBirdFeet);
+
         connect(&_tick, &QTimer::timeout, this, &ControlSender::sendPacket);
         _tick.start(33);                 // ~30 Hz
     }
@@ -454,6 +482,9 @@ public:
     bool  tiltActive() const { return _tiltActive; }
     bool  cranking() const { return _cranking; }
     bool  engineOn() const { return _engineOn; }
+    QString aircraftKind() const { return _aircraftKind; }
+    bool  birdAirborne() const { return _birdAirborne; }
+    bool  isBird() const { return _aircraftKind == QStringLiteral("bird"); }
     QVariantList tutorials() const { return _tutorials; }
     bool  tutorialRunning() const { return _tutorialRunning; }
     QString tutorialMessage() const { return _tutorialMessage; }
@@ -461,6 +492,24 @@ public:
     bool  paused() const { return _paused; }
     bool  reversing() const { return _reversing; }
     qreal reverseDepth() const { return _reverseDepth; }
+    bool  reverseThrust() const { return _reverseThrust; }
+    QString reverseModeName() const
+    {
+        switch (_reverseMode) {
+        case ReverseGeneric:  return "generic";
+        case ReverseAircraft: return "aircraft";
+        case ReverseSpoilers: return "spoilers";
+        default:              return QString();
+        }
+    }
+    bool  parkingBrake() const { return _parkingBrake; }
+    bool   posValid() const { return _posValid; }
+    double posLat() const { return _posLat; }
+    double posLon() const { return _posLon; }
+    double posHeading() const { return _posHeading; }
+    double posAltitude() const { return _posAltitude; }
+    double posGroundSpeed() const { return _posGroundSpeed; }
+    double posMagVar() const { return _posMagVar; }
     QString apKind() const { return _apKind; }
     bool apOn() const { return _apOn; }
     bool apAutothrustOn() const { return _apAthr; }
@@ -503,7 +552,12 @@ public:
         emit changed();
     }
     void setGearDown(bool v)  { _gearDown = v;          emit changed(); }
+    void setReverseThrust(bool v) { _reverseThrust = v;  emit changed(); }
     void setTiltActive(bool v){ _tiltActive = v;        emit changed(); }
+    qreal tiltSens() const { return _tiltSens; }
+    qreal tiltExpo() const { return _tiltExpo; }
+    void setTiltSens(qreal v) { _tiltSens = qBound(0.3, v, 3.0); emit changed(); }
+    void setTiltExpo(qreal v) { _tiltExpo = qBound(0.0, v, 0.95); emit changed(); }
 
 public slots:
     /* The whole start-up, for whatever is loaded, as one Nasal script over
@@ -524,9 +578,75 @@ public slots:
        it: the A320 family's acconfig "ready for taxi" state runs APU,
        bleed air and both engines in the right order, which the FADEC
        insists on. */
+    /* Which kind of aircraft is flying, from QML.  Only the birds are
+       treated differently here, and only because they have no engines. */
+    void setAircraftKind(const QString& kind)
+    {
+        if (_aircraftKind == kind) return;
+        _aircraftKind = kind;
+        /* Whether a bird is airborne is what its feet say, and nothing in
+           the simulator tells us without being asked. */
+        if (isBird()) _birdTimer.start(2000);
+        else          _birdTimer.stop();
+        emit changed();
+    }
+
+    /* The take-off of a bird, on the start-engine button.  bird.launch()
+       holds the launch command until the feet have been off the ground for
+       a second, at most twelve - one tap, which is all a touch screen can
+       give; the property is the fallback for an aircraft that came without
+       its Nasal file.  The engine procedure must not run on a bird: it sets
+       the starter, which the aircraft mirrors to the launch command, and
+       holds it for up to ninety seconds. */
+    void launchBird()
+    {
+        sendNasal(QByteArray(
+            "if (contains(globals, \"bird\") and contains(bird, \"launch\"))\n"
+            "    bird.launch(12);\n"
+            "else\n"
+            "    setprop(\"/fdm/jsbsim/fcs/launch-cmd\", 1);\n"));
+        /* Full flapping for the run: the throttle is the flapping strength,
+           and the runners (goose, albatross, stork) need all of it for
+           several seconds.  The 0.25 of the engine procedure would be a bird
+           going for a stroll. */
+        setThrottle(1.0);
+        _cranking = true;
+        _birdHeld.start();
+        _birdTimer.start(2000);
+        emit changed();
+        QTimer::singleShot(500, this, &ControlSender::pollBirdFeet);
+    }
+
+    void pollBirdFeet()
+    {
+        if (!isBird()) { _birdTimer.stop(); return; }
+        telnetQuery("get /fdm/jsbsim/fcs/bird-feet-wow", [this](const QString& out){
+            /* No number in the answer means the property is not there - the
+               aircraft may still be loading, or it is not a bird-flight
+               model after all.  Nothing is claimed in that case. */
+            const QRegularExpressionMatch m =
+                QRegularExpression("'([0-9.eE+-]+)'").match(out);
+            if (!m.hasMatch()) return;
+            const bool airborne = m.captured(1).toDouble() < 0.5;
+            if (airborne != _birdAirborne) {
+                _birdAirborne = airborne;
+                emit changed();
+            }
+            /* The launch is over once the feet are off the ground, and in
+               any case after the fifteen seconds bird.launch() can hold it. */
+            if (_cranking && (airborne || _birdHeld.elapsed() > 15000)) {
+                _cranking = false;
+                emit changed();
+            }
+        });
+    }
+
     void startEngine()
     {
         if (_cranking) return;
+
+        /* A bird has no engines; the button is its take-off run. */
+        if (isBird()) { launchBird(); return; }
 
         sendNasal(QByteArray(
             "# The aircraft's own start-up procedure comes first: the c172p's\n"
@@ -626,6 +746,7 @@ public slots:
 
         _cranking = true;
         _throttle = 0.25;
+        _parkingBrake = false;           // the script above released it
         emit changed();
 
         /* The button reads "cranking" for ten seconds; the starters
@@ -639,6 +760,19 @@ public slots:
 
     void stopEngine()
     {
+        /* A bird has nothing to shut down: this lets go of the launch
+           command, so one in the middle of its run stops running. */
+        if (isBird()) {
+            sendNasal(QByteArray(
+                "setprop(\"/fdm/jsbsim/fcs/launch-cmd\", 0);\n"
+                "setprop(\"/controls/engines/engine[0]/starter\", 0);\n"
+                "if (contains(globals, \"bird\") and bird.launch_timer != nil)\n"
+                "    bird.launch_timer.stop();\n"));
+            _cranking = false;
+            emit changed();
+            return;
+        }
+
         sendNasal(QByteArray(
             "var core = {tutorial:1, local_weather:1, jetways:1, jetways_edit:1, FailureMgr:1,\n"
             "            canvas:1, console:1, debug:1, input_helpers:1, performance_monitor:1,\n"
@@ -673,6 +807,56 @@ public slots:
         _cranking = false;
         _engineOn = false;
         emit changed();
+    }
+
+    /* The parking brake, from a long press on the brake button.  Held by
+       the aircraft, not by the finger, so it stays set after letting go. */
+    void setParkingBrake(bool on)
+    {
+        _parkingBrake = on;
+        sendTelnet(QStringList() << QString("set /controls/gear/brake-parking %1").arg(on ? 1 : 0));
+        emit changed();
+    }
+
+    /* Read back what the aircraft did with it: the A320 starts with it
+       set, an engine start releases it. */
+    void pollParkingBrake()
+    {
+        telnetQuery("get /controls/gear/brake-parking", [this](const QString& out){
+            const auto m = QRegularExpression("'([^']*)'").match(out);
+            if (!m.hasMatch()) return;
+            const QString v = m.captured(1);
+            const bool on = v == "true" || v.toDouble() > 0.5;
+            if (on != _parkingBrake) { _parkingBrake = on; emit changed(); }
+        });
+    }
+
+    /* Position, heading, altitude, ground speed and the magnetic variation,
+       one question after the other, published together. */
+    void pollPosition()
+    {
+        telnetQuery("ls /position", [this](const QString& p){
+            bool okLat = false, okLon = false;
+            const double lat = propValue(p, "latitude-deg").toDouble(&okLat);
+            const double lon = propValue(p, "longitude-deg").toDouble(&okLon);
+            if (!okLat || !okLon) return;
+            const double alt = propValue(p, "altitude-ft").toDouble();
+            telnetQuery("ls /orientation", [this, lat, lon, alt](const QString& o){
+                const double hdg = propValue(o, "heading-deg").toDouble();
+                telnetQuery("ls /velocities", [this, lat, lon, alt, hdg](const QString& v){
+                    const double gs = propValue(v, "groundspeed-kt").toDouble();
+                    telnetQuery("get /environment/magnetic-variation-deg",
+                                [this, lat, lon, alt, hdg, gs](const QString& e){
+                        const auto m = QRegularExpression("'([0-9.eE+-]+)'").match(e);
+                        _posMagVar = m.hasMatch() ? m.captured(1).toDouble() : _posMagVar;
+                        _posLat = lat; _posLon = lon; _posAltitude = alt;
+                        _posHeading = hdg; _posGroundSpeed = gs;
+                        _posValid = true;
+                        emit positionChanged();
+                    });
+                });
+            });
+        });
     }
 
     /* ---------------------------------------------------------- autopilot
@@ -711,6 +895,7 @@ public slots:
        state of the whole panel comes out of one ls. */
     void apPollState()
     {
+        pollPosition();
         if (_apKind == "a320") {
             telnetQuery("ls /it-autoflight/input", [this](const QString& out){
                 const auto num = [&out](const char* name, int fallback){
@@ -937,6 +1122,15 @@ public slots:
         });
     }
 
+    /* Towards somewhere: a magnetic heading, held.  From the map, for the
+       airport tapped there. */
+    void apFlyHeading(int deg)
+    {
+        apSetHeading(deg);
+        if (_apKind == "a320") apMaster(true);
+        apHeadingHold(true);
+    }
+
     /* Wings level: the simplest thing FlightGear's autopilot can do, and
        the one worth having when it gets uncomfortable.  The A320 has no
        such mode; there it is heading hold on the current heading. */
@@ -976,8 +1170,17 @@ public slots:
         QTimer::singleShot(600, this, &ControlSender::apPollState);
     }
 
-    /* Reverse thrust, from the throttle held below zero.  Switched on
-       entering that zone and off leaving it or letting go, both at idle.
+    /* Reverse thrust and spoilers, from the throttle held below zero.
+       Switched on entering that zone and off leaving it or letting go, both
+       at idle.
+
+       The spoilers (and speedbrakes, whichever of the two properties the
+       aircraft reads) come out together with the reversers.  Where there
+       are no reversers to deploy - an aircraft without any, or one that is
+       still in the air - the zone works the spoilers alone, and its depth
+       is how far they extend; the throttle stays at idle.  Reversers only
+       with weight on the wheels: pulled in flight on a YASim jet they
+       would really deploy.
 
        Most aircraft get the standard per-engine reverser property that
        JSBSim and YASim read, and the depth of the zone is the throttle.
@@ -991,9 +1194,12 @@ public slots:
        takes the reverse thrust from throttle-rev and ignores the forward
        lever, so the depth goes there (0.05 idle reverse to 0.65 full, the
        range of its own keys) and the forward throttle stays at idle.
-       Which of the two applies is only known inside the simulator: the
-       script says so in /sim/fgtouch/reverse-mode, and the depth waits
-       until that has been read back. */
+
+       The loop also keeps looking at the wheels while the finger stays in
+       the zone, so spoilers pulled in the flare become reversers at
+       touchdown.  Which of the three applies is only known inside the
+       simulator: the script says so in /sim/fgtouch/reverse-mode, which is
+       read back for as long as the zone is held. */
     void setReverse(bool on)
     {
         if (on == _reversing) return;
@@ -1003,8 +1209,8 @@ public slots:
         if (!on) _stowed.start();
         sendNasal(QByteArray(
             "var on = ") + (on ? "1" : "0") + QByteArray(";\n"
+            "var thrust = ") + (_reverseThrust ? "1" : "0") + QByteArray(";\n"
             "var own = contains(globals, \"systems\") and contains(systems, \"toggleFastRevThrust\");\n"
-            "setprop(\"/sim/fgtouch/reverse-mode\", own ? \"aircraft\" : \"generic\");\n"
             "# each request gets a number; a loop of an older one ends by itself\n"
             "var serial = (getprop(\"/sim/fgtouch/reverse-serial\") or 0) + 1;\n"
             "setprop(\"/sim/fgtouch/reverse-serial\", serial);\n"
@@ -1013,46 +1219,69 @@ public slots:
             "        if (getprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\")) return 1;\n"
             "    return 0;\n"
             "};\n"
-            "if (own) {\n"
-            "    if (on) setprop(\"/sim/fgtouch/reverse-depth\", 0);\n"
-            "    var tries = 0;\n"
-            "    var step = func {\n"
-            "        if (getprop(\"/sim/fgtouch/reverse-serial\") != serial) return;\n"
-            "        var now = out();\n"
-            "        if (now != on) {\n"
+            "var ground = func {\n"
+            "    for (var i = 0; i < 8; i += 1)\n"
+            "        if (getprop(\"/gear/gear[\" ~ i ~ \"]/wow\")) return 1;\n"
+            "    return 0;\n"
+            "};\n"
+            "var spoilers = func(v) {\n"
+            "    setprop(\"/controls/flight/spoilers\", v);\n"
+            "    setprop(\"/controls/flight/speedbrake\", v);\n"
+            "};\n"
+            "if (on) setprop(\"/sim/fgtouch/reverse-depth\", 0);\n"
+            "var tries = 0;\n"
+            "var last = -1;\n"
+            "var step = func {\n"
+            "    if (getprop(\"/sim/fgtouch/reverse-serial\") != serial) return;\n"
+            "    var want = on and thrust and ground();\n"
+            "    if (on) {\n"
+            "        setprop(\"/sim/fgtouch/reverse-mode\", !want ? \"spoilers\" : own ? \"aircraft\" : \"generic\");\n"
+            "        # with the reversers the spoilers are fully out; on their\n"
+            "        # own the application sets how far\n"
+            "        if (want) spoilers(1);\n"
+            "    } else {\n"
+            "        setprop(\"/sim/fgtouch/reverse-mode\", \"\");\n"
+            "        if (last == -1) spoilers(0);\n"
+            "    }\n"
+            "    if (want != last) { tries = 0; last = want; }\n"
+            "    var now = 0;\n"
+            "    if (own) {\n"
+            "        now = out();\n"
+            "        if (now != want and (want or tries < 16)) {\n"
             "            systems.toggleFastRevThrust();\n"
             "            tries += 1;\n"
             "            now = out();\n"
             "        }\n"
-            "        if (on) {\n"
-            "            # out: the depth onto the reverse levers; not yet: the\n"
-            "            # FADEC has not seen idle, try again for as long as the\n"
-            "            # finger stays in the zone\n"
-            "            if (now) {\n"
-            "                var d = getprop(\"/sim/fgtouch/reverse-depth\") or 0;\n"
-            "                for (var i = 0; i < 8; i += 1)\n"
-            "                    if (getprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\"))\n"
-            "                        setprop(\"/controls/engines/engine[\" ~ i ~ \"]/throttle-rev\", 0.05 + 0.60 * d);\n"
-            "            }\n"
-            "            settimer(step, now ? 0.1 : 0.25);\n"
-            "        } else if (now and tries < 16) {\n"
-            "            settimer(step, 0.25);\n"
+            "        # out: the depth onto the reverse levers; not yet: the FADEC\n"
+            "        # has not seen idle, try again for as long as the finger\n"
+            "        # stays in the zone\n"
+            "        if (want and now) {\n"
+            "            var d = getprop(\"/sim/fgtouch/reverse-depth\") or 0;\n"
+            "            for (var i = 0; i < 8; i += 1)\n"
+            "                if (getprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\"))\n"
+            "                    setprop(\"/controls/engines/engine[\" ~ i ~ \"]/throttle-rev\", 0.05 + 0.60 * d);\n"
             "        }\n"
-            "    };\n"
-            "    step();\n"
-            "} else {\n"
-            "    setprop(\"/controls/engines/reverser-all\", on);\n"
-            "    for (var i = 0; i < 8; i += 1)\n"
-            "        setprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\", on);\n"
-            "}\n"));
+            "    } else {\n"
+            "        setprop(\"/controls/engines/reverser-all\", want);\n"
+            "        for (var i = 0; i < 8; i += 1)\n"
+            "            setprop(\"/controls/engines/engine[\" ~ i ~ \"]/reverser\", want);\n"
+            "    }\n"
+            "    if (on)\n"
+            "        settimer(step, (want and now) ? 0.1 : 0.25);\n"
+            "    else if (own and out() and tries < 16)\n"
+            "        settimer(step, 0.25);\n"
+            "};\n"
+            "step();\n"));
         if (on) {
             _reverseMode = ReverseUnknown;
             queryReverseMode(0);
+        } else {
+            _reverseMode = ReverseUnknown;
         }
         emit changed();
     }
 
-    /* How much reverse thrust, 0..1, while reversing */
+    /* How much reverse thrust, or how much spoiler, 0..1, while in the zone */
     void setReverseDepth(qreal depth)
     {
         _reverseDepth = clamp01(depth);
@@ -1063,6 +1292,15 @@ public slots:
             _throttle = 0;
             sendTelnet(QStringList() << "set /sim/fgtouch/reverse-depth "
                                         + QString::number(_reverseDepth, 'f', 2));
+        } else if (_reverseMode == ReverseSpoilers) {
+            _throttle = 0;
+            /* whole percent steps only, so a drag does not flood telnet */
+            const QString d = QString::number(qRound(_reverseDepth * 100) / 100.0, 'f', 2);
+            if (d != _spoilersSent) {
+                _spoilersSent = d;
+                sendTelnet(QStringList() << "set /controls/flight/spoilers " + d
+                                         << "set /controls/flight/speedbrake " + d);
+            }
         }
         emit changed();
     }
@@ -1406,6 +1644,9 @@ private:
         /* 18 degrees either side of the reference is full deflection.  Thirty
            was too little: seven degrees of tilt gave eight percent of
            elevator after dead zone and expo, and nothing happened. */
+        /* The elevator keeps its 18 degrees: that value was brought down
+           from 30 because 30 reacted too weakly, and the setting below is
+           about rolling, not pitching. */
         const qreal MAX_ANGLE = 18.0 * M_PI / 180.0;
         const qreal pitchAngle = std::atan2(r->x(), r->z());
         const qreal rollAngle  = std::atan2(r->y(), std::sqrt(r->x() * r->x() + r->z() * r->z()));
@@ -1414,14 +1655,16 @@ private:
         /* Rolling the phone is a wider, easier motion than pitching it, so
            the roll axis gets a range of its own - 35 degrees for full
            aileron against 18 for full elevator. */
-        const qreal ROLL_ANGLE = 35.0 * M_PI / 180.0;
+        /* Divided by the sensitivity: half as sensitive means twice the
+           lean for the same deflection. */
+        const qreal ROLL_ANGLE = 35.0 * M_PI / 180.0 / _tiltSens;
         qreal roll  = qBound(-1.0, (rollAngle  - refRoll)  / ROLL_ANGLE, 1.0);
         /* Tilting the top edge towards the pilot is pulling the yoke, which
            FlightGear wants as a negative elevator - hence the sign. */
         qreal pitch = qBound(-1.0, -(pitchAngle - refPitch) / MAX_ANGLE, 1.0);
 
-        roll  = shape(roll);
-        pitch = shape(pitch);
+        roll  = shape(roll, _tiltExpo);
+        pitch = shape(pitch, 0.35);
 
         /* Tiefpass gegen Handzittern */
         const qreal a = 0.25;
@@ -1432,12 +1675,11 @@ private:
     }
 
     /* Totzone plus Expo - ohne das ist Praezisionsflug unmoeglich */
-    static qreal shape(qreal v)
+    static qreal shape(qreal v, qreal k)
     {
         const qreal dead = 0.03;
         if (qAbs(v) < dead) return 0.0;
         const qreal s = (qAbs(v) - dead) / (1.0 - dead);
-        const qreal k = 0.35;
         const qreal e = k * s * s * s + (1.0 - k) * s;
         return v < 0 ? -e : e;
     }
@@ -1550,14 +1792,23 @@ private:
     {
         telnetQuery("get /sim/fgtouch/reverse-mode", [this, attempt](const QString& out){
             if (!_reversing) return;
-            if (out.contains("'aircraft'")) _reverseMode = ReverseAircraft;
-            else if (out.contains("'generic'")) _reverseMode = ReverseGeneric;
-            else {
+            auto mode = ReverseUnknown;
+            if (out.contains("'aircraft'")) mode = ReverseAircraft;
+            else if (out.contains("'generic'")) mode = ReverseGeneric;
+            else if (out.contains("'spoilers'")) mode = ReverseSpoilers;
+            if (mode == ReverseUnknown) {
                 if (attempt < 20)
                     QTimer::singleShot(150, this, [this, attempt]{ queryReverseMode(attempt + 1); });
                 return;
             }
-            setReverseDepth(_reverseDepth);
+            if (mode != _reverseMode) {
+                _reverseMode = mode;
+                _spoilersSent.clear();
+                setReverseDepth(_reverseDepth);
+            }
+            /* touchdown with the finger still in the zone turns spoilers
+               into reversers, a bounce the other way */
+            QTimer::singleShot(400, this, [this]{ if (_reversing) queryReverseMode(0); });
         });
     }
 
@@ -1622,6 +1873,7 @@ private:
 
 signals:
     void changed();
+    void positionChanged();
     void apChanged();
     void tutorialsChanged();
     void tutorialChanged();
@@ -1635,8 +1887,20 @@ private:
     qreal _aileron = 0.0, _elevator = 0.0;
     bool  _gearDown = true;
     bool  _tiltActive = true;   /* first reading calibrates the reference */
+    /* Aileron only.  0.65 puts full aileron at 54 degrees of lean instead
+       of 35, and 0.6 flattens the middle of the travel: a bird rolls on the
+       twist of its whole wing, which bites far harder than a flap, and the
+       first flights were over-controlled in roll. */
+    qreal _tiltSens = 0.65;
+    qreal _tiltExpo = 0.6;
     bool  _cranking = false;
     bool  _engineOn = false;
+    /* Birds (bird-flight): the kind from the tags, whether the feet are off
+       the ground, and how long the launch has been held. */
+    QString _aircraftKind;
+    bool  _birdAirborne = false;
+    QTimer _birdTimer;
+    QElapsedTimer _birdHeld;
     QTcpSocket* _telnet = nullptr;
     QByteArray  _telnetQueue;
     QTcpSocket* _tnq = nullptr;
@@ -1656,7 +1920,14 @@ private:
     bool _apHeadingOn = false, _apAltitudeOn = false, _apVsOn = false;
     int _apHeading = 0, _apAltitude = 5000, _apVs = 0, _apSpeed = 120;
     QTimer _apPoll;
-    enum { ReverseUnknown, ReverseGeneric, ReverseAircraft } _reverseMode = ReverseUnknown;
+    enum ReverseMode { ReverseUnknown, ReverseGeneric, ReverseAircraft, ReverseSpoilers };
+    ReverseMode _reverseMode = ReverseUnknown;
+    bool    _reverseThrust = true;
+    QString _spoilersSent;
+    bool    _parkingBrake = false;
+    bool    _posValid = false;
+    double  _posLat = 0, _posLon = 0, _posHeading = 0, _posAltitude = 0;
+    double  _posGroundSpeed = 0, _posMagVar = 0;
     QElapsedTimer _loadWaitStarted;
     qreal _flightThrottle = 0.0;
     QElapsedTimer _viewSent;

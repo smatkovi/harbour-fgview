@@ -1,6 +1,6 @@
 Name:       harbour-fgview
 Summary:    FlightGear viewer and controls for Sailfish OS
-Version:    0.12.0
+Version:    0.15.1
 Release:    1
 License:    GPLv2+
 URL:        https://github.com/smatkovi/harbour-fgview
@@ -52,6 +52,53 @@ desktop-file-install --delete-original       \
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Oct 31 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.15.1-1
+- The tilt control of the aileron can be set, and comes gentler by default:
+  full aileron now asks for 54 degrees of lean instead of 35, with a softer
+  middle of the travel (65 % and 0.6 on the two sliders). A bird's aileron is
+  a twist of the whole wing rather than a flap on it, so the same lean rolls
+  far harder than in an aircraft.
+- The elevator is deliberately left alone at 18 degrees: that value was
+  brought down from 30 because 30 reacted too weakly, and one slider over
+  both axes would have undone it.
+* Fri Oct 31 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.14.0-1
+- The bird-flight aircraft fly: flapping birds, the pterosaur Hatzegopteryx
+  and the fossil bird Pelagornis (github.com/smatkovi/bird-flight) are their
+  own kind of aircraft now, recognised by their tags.
+- "Take off" instead of "Engine on" for them. One tap holds the launch until
+  the feet have been off the ground for a second (bird.launch over the Nasal
+  channel), a tap while it runs lets go of it again. The button says
+  "Airborne" once the feet are free, which is read back from the flight
+  model.
+- The throttle is the strength of the wingbeat and is written to the flight
+  model directly. The aircraft copy the throttle themselves in Nasal, but
+  FlightGear 2020.3 cannot add a listener to the tied throttle property, so
+  the wings never moved.
+- A start in the air gives them 1000 ft above the field at 30 knots rather
+  than 3000 ft at 90, nothing is trimmed, and no engine procedure runs on an
+  aircraft that has none. The flight model runs at 60 Hz at least: a pigeon
+  beats its wings six times a second.
+* Sun Sep 13 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.13.0-1
+- The autopilot values can be set. Their step buttons had no width, so they
+  could be neither seen nor tapped; they have one now, and each value is also
+  a field to type an exact one into.
+- A map on the autopilot page, next to the panel: the aircraft in the middle,
+  north up, airports, small airports and airfields around it from the lists
+  already on the phone, no connection needed. 2 to 200 nm. Tap one for its
+  name, runway, distance and magnetic course, and "Fly there" turns the
+  autopilot towards it.
+- The bottom of the throttle works the spoilers as well: out with the
+  reversers, and on aircraft without reversers, or still in the air, the
+  spoilers alone, as far as the finger goes down. Reversers only with weight
+  on the wheels; spoilers held through the flare become reversers at
+  touchdown.
+- A long press on Brake sets the parking brake, a second one releases it.
+  What the aircraft does with it (the A320 starts with it set) is read back.
+- Airfields are a list of their own under the country, after large and small
+  airports: grass, gravel or dirt runways only.
+- Settings: without real weather, the wind can be set - speed and direction,
+  at every height.
+
 * Sat Sep 12 2026 Sebastian Matkovich <smatkovi@users.noreply.github.com> - 0.12.0-1
 - An autopilot panel, from the AP button in the bottom left corner of the
   flight page: master and autothrust, hold speed, heading, altitude or

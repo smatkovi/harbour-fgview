@@ -32,7 +32,8 @@ Page {
 
     Component.onCompleted: load()
 
-    // Entries are [icao, name, longest runway in metres, lat, lon, [runway ends]].
+    // Entries are [icao, name, longest runway in metres, lat, lon, [runway ends],
+    // field elevation in feet].
     function shown() {
         if (filter === "") return all
         var f = filter.toLowerCase()
@@ -52,6 +53,7 @@ Page {
             width: page.width
             PageHeader {
                 title: page.which === "large" ? qsTr("Large airports")
+                     : page.which === "field" ? qsTr("Airfields")
                                               : qsTr("Small airports")
                 description: page.countryName
             }

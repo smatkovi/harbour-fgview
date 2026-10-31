@@ -33,8 +33,12 @@ Page {
         var place = scenarioPlace()
         var elsewhere = place && place.airport !== simCfg.airport
         var kind = simCfg.aircraftKind
-        var approach = { jet: 150, turboprop: 120, piston: 75, helicopter: 50, glider: 55 }
-        var cruise   = { jet: 250, turboprop: 200, piston: 110, helicopter: 90, glider: 60 }
+        // A goose cruises at some 30 knots; released at the 90 of a light
+        // aircraft, a bird is far outside anything its wings were built for.
+        var approach = { jet: 150, turboprop: 120, piston: 75, helicopter: 50,
+                         glider: 55, bird: 25 }
+        var cruise   = { jet: 250, turboprop: 200, piston: 110, helicopter: 90,
+                         glider: 60, bird: 30 }
         var args = []
         if (simCfg.startMode !== 1 && simCfg.runway !== "" && !elsewhere)
             args.push("--runway=" + simCfg.runway)
@@ -46,8 +50,21 @@ Page {
             // on the runway
             var elev = elsewhere ? (place.airportElev || 0)
                      : (simCfg.airportCoordsIcao === simCfg.airport ? simCfg.airportElev : 0)
-            args.push("--altitude=" + Math.round(elev + 3000), "--vc=" + (cruise[kind] || 120),
-                      "--prop:/sim/presets/running=true", "--trim")
+            if (kind === "bird") {
+                // A thousand feet above the field is enough to try gliding,
+                // and there is nothing to trim or to start: the wings make
+                // the lift and the thrust, and JSBSim has no engine here.
+                args.push("--altitude=" + Math.round(elev + 1000),
+                          "--vc=" + cruise[kind])
+            } else {
+                args.push("--altitude=" + Math.round(elev + 3000), "--vc=" + (cruise[kind] || 120),
+                          "--prop:/sim/presets/running=true", "--trim")
+            }
+        } else if (simCfg.startMode === 2 && kind === "bird") {
+            // On approach a bird comes in on its own wings; trimming a
+            // flapping model at a fixed speed has nothing to settle on.
+            args.push("--offset-distance=1", "--glideslope=5",
+                      "--vc=" + approach[kind])
         } else if (simCfg.startMode === 2) {
             // FlightGear works the altitude out from distance and glide
             // path (positioninit.cxx, fgSetDistOrAltFromGlideSlope)
@@ -95,7 +112,13 @@ Page {
                                   "--prop:/sim/rendering/random-vegetation="
                                     + (simCfg.vegetation > 0 ? "true" : "false"),
                                   "--prop:/sim/rendering/vegetation-density=" + simCfg.vegetation,
-                                  "--prop:/sim/model-hz=" + simCfg.modelHz,
+                                  // At least 60 Hz for a bird: the pigeon
+                                  // beats its wings about six times a
+                                  // second, and a 30 Hz flight model turns
+                                  // that into noise.
+                                  "--prop:/sim/model-hz="
+                                    + (simCfg.aircraftKind === "bird"
+                                       ? Math.max(60, simCfg.modelHz) : simCfg.modelHz),
                                   // Level 0 really has to switch the manager off:
                                   // a proportion of 0.0 still lets one schedule in
                                   // eight through, because the test is "randval >
@@ -157,6 +180,11 @@ Page {
                                 .concat(simCfg.visibility > 0
                                         ? ["--visibility="
                                            + [0, 5000, 10000, 20000, 40000, 80000][simCfg.visibility]]
+                                        : [])
+                                // A wind of one's own, only instead of
+                                // real weather, which brings its own
+                                .concat(simCfg.windSet && !simCfg.realWeather
+                                        ? ["--wind=" + simCfg.windFrom + "@" + simCfg.windSpeed]
                                         : [])
                                 .concat(page.startModeArgs())
                                 .concat(["--geometry=" + page.renderGeometry()]),
@@ -255,6 +283,9 @@ Page {
         property bool sceneryRefresh: false
         property bool sceneryInFlight: false
         property bool realWeather: false
+        property bool windSet: false
+        property int  windSpeed: 10
+        property int  windFrom: 270
         property bool pauseInBackground: true
         // AI scenario: file name in FGData/AI without .xml, "" for none;
         // the carrier in it, if any, is where the aircraft then starts
@@ -378,6 +409,12 @@ Page {
                             simCfg.aircraft = id
                             simCfg.aircraftLabel = label
                             simCfg.aircraftKind = kind
+                            // No start mode is forced on a bird here.  A
+                            // start in the air is the easier one, but they
+                            // do take off from the ground - measured at
+                            // LOWW, runway 29: the goose lifts off after
+                            // 46 m with no wind and after 19 m into 10 kt -
+                            // and which it is stays the user's choice.
                         })
                     }
                 }
@@ -415,9 +452,15 @@ Page {
                         MenuItem { text: qsTr("In the air") }
                         MenuItem { text: qsTr("On final approach") }
                     }
-                    description: [qsTr("Engines off; start them from the cockpit."),
-                                  qsTr("At 3000 ft with the engines running."),
-                                  qsTr("5 nm out on a 3° glide path to the chosen runway, engines running.")][currentIndex]
+                    // A bird is told something else: it has no engines, and
+                    // it is set going lower and far slower.
+                    description: (simCfg.aircraftKind === "bird"
+                                  ? [qsTr("On the ground; the take-off run is on the start button."),
+                                     qsTr("1000 ft above the field at 30 knots, gliding."),
+                                     qsTr("1 nm out on a 5° glide path to the chosen runway.")]
+                                  : [qsTr("Engines off; start them from the cockpit."),
+                                     qsTr("At 3000 ft with the engines running."),
+                                     qsTr("5 nm out on a 3° glide path to the chosen runway, engines running.")])[currentIndex]
                     onCurrentIndexChanged: simCfg.startMode = currentIndex
                 }
 
